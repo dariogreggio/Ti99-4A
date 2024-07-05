@@ -3,12 +3,6 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
-//#include <graph.h>
-//#include <dos.h>
-//#include <malloc.h>
-//#include <memory.h>
-//#include <fcntl.h>
-//#include <io.h>
 #include <xc.h>
 
 #include "Adafruit_ST77xx.h"
@@ -22,7 +16,7 @@
 
 extern BYTE fExit;
 extern BYTE debug;
-volatile BYTE TIMIRQ,lineCntr;
+volatile BYTE TIMIRQ,VIDIRQ;
 
 extern volatile BYTE keysFeedPtr;
 
@@ -44,16 +38,15 @@ union __attribute__((__packed__)) {
 	} Pipe2;
 
 union __attribute__((__packed__)) Z_REG {
-  SWORD x;
+  uint16_t x;
   struct __attribute__((__packed__)) { 
-    BYTE l;
-    BYTE h;
+    uint8_t l;
+    uint8_t h;
     } b;
-//    } _bc1,_de1,_hl1,_af1,_af2,_bc2,_de2,_hl2;
   };
 union __attribute__((__packed__)) Z_REGISTERS {
-  BYTE  b[8];
-  union Z_REG r[4];
+  uint8_t b[32];
+  union Z_REG r[16];
   };
 
 #define ID_LG 0x1
@@ -65,7 +58,7 @@ union __attribute__((__packed__)) Z_REGISTERS {
 #define ID_XOP 0x40
 #define ID_INTERRUPTMASK 0xF000
 union __attribute__((__packed__)) REGISTRO_F {
-  BYTE b;
+  uint16_t x;
   struct __attribute__((__packed__)) {
     unsigned int LogicalGreater: 1;
     unsigned int ArithmeticGreater: 1;
@@ -80,63 +73,45 @@ union __attribute__((__packed__)) REGISTRO_F {
     };
   };
 union __attribute__((__packed__)) OPERAND {
-  BYTE *reg8;
-  WORD *reg16;
-  WORD mem;
+  uint8_t *reg8;
+  uint16_t *reg16;
+  uint16_t mem;
   };
 union __attribute__((__packed__)) RESULT {
   struct __attribute__((__packed__)) {
-    BYTE l;
-    BYTE h;
+    uint8_t l;
+    uint8_t h;
     } b;
-  WORD x;
-  DWORD d;
+  uint16_t x;
+  uint32_t d;
   };
     
 int Emulate(int mode) {
-/*Registers (http://www.z80.info/z80syntx.htm#LD)
---------------
- A = 111
- B = 000
- C = 001
- D = 010
- E = 011
- H = 100
- L = 101*/
-#define _a regs1.r[3].b.l //
-	// in TEORIA, REGISTRO_F dovrebbe appartenere qua... ho patchato pop af push ecc, SISTEMARE!! _f.b
-  // n.b. anche che A/F sono invertiti rispetto agli altri, v. push/pop
-#define _f_af regs1.r[3].b.h //
-#define _b regs1.r[0].b.h
-#define _c regs1.r[0].b.l
-#define _d regs1.r[1].b.h
-#define _e regs1.r[1].b.l
-#define _h regs1.r[2].b.h
-#define _l regs1.r[2].b.l
-#define _af regs1.r[3].x
-#define _bc regs1.r[0].x
-#define _de regs1.r[1].x
-#define _hl regs1.r[2].x
-#define WORKING_REG regs1.b[((Pipe1 & 0x38) ^ 8) >> 3]      // la parte bassa/alta è invertita...
-#define WORKING_REG2 regs1.b[(Pipe1 ^ 1) & 7]
+//https://en.wikipedia.org/wiki/TMS9900
+#define WORKING_REG regs1.r[(Pipe1 & 0xf)].x      // 
+#define WORKING_TS ((Pipe1 >> 4) & 0b11)
+#define WORKING_TD ((Pipe1 >> 12) & 0b11)
+#define REGISTER_DIRECT 0
+#define REGISTER_INDIRECT 1
+#define REGISTER_SYMBOLIC_INDEXED 2
+#define REGISTER_INDIRECT_AUTOINCREMENT 3
+#define WORKING_REG2 regs1.r[((Pipe1 >> 8) & 0xf)].x      // 
 //#define WORKING_REG_CB regs1.b[((Pipe2.b.l & 0x38) ^ 8) >> 3]
 #define WORKING_REG_CB regs1.b[(Pipe2.b.l ^ 1) & 7]
 #define WORKING_BITPOS (1 << ((Pipe2.b.l & 0x38) >> 3))
 #define WORKING_BITPOS2 (1 << ((Pipe2.b.h & 0x38) >> 3))
     
 	SWORD _pc=0;
-	SWORD _ix=0;
-	SWORD _iy=0;
+	SWORD _wp=0;
 	SWORD _sp=0;
-	BYTE _i,_r;
 	BYTE IRQ_Mode=0;
-	BYTE IRQ_Enable1=0,IRQ_Enable2=0;
+	BYTE IRQ_Enable1=0;
   union Z_REGISTERS regs1,regs2;
   union RESULT res1,res2,res3;
 //  union OPERAND op1,op2;
-	union REGISTRO_F _f;
+	union REGISTRO_F _st;
 	union REGISTRO_F _f1;
-	/*register*/ SWORD i;
+	/*register*/ uint16_t i;
   int c=0;
 
 
@@ -146,7 +121,7 @@ int Emulate(int mode) {
 //  _pc=0x0935;
 //  _sp=0x8700;
   
-  
+
 	do {
 
 		c++;
@@ -156,6 +131,12 @@ int Emulate(int mode) {
 #ifndef USING_SIMULATOR      
 			UpdateScreen(0,192);    // fare passate più piccole!
 #endif
+extern BYTE TMS9918Reg[8],TMS9918RegS;
+      TMS9918RegS |= 0b10000000;
+      if(TMS9918Reg[1] & 0b00100000) {
+        VIDIRQ=1;
+        }
+      
       LED1^=1;    // 42mS~ con SKYNET 7/6/20; 10~mS con Z80NE 10/7/21; 35mS GALAKSIJA 16/10/22; 30mS ZX80 27/10/22
       // QUADRUPLICO/ecc! 27/10/22
       
@@ -196,8 +177,7 @@ int Emulate(int mode) {
 			}*/
 		if(DoReset) {
 			_pc=0;
-      _i=_r=0;
-			IRQ_Enable1=0;IRQ_Enable2=0;
+			IRQ_Enable1=0;
      	IRQ_Mode=0;
 			DoReset=0;DoHalt=0;//DoWait=0;
       keysFeedPtr=255; //meglio ;)
@@ -205,7 +185,7 @@ int Emulate(int mode) {
 			}
 		if(DoNMI) {
 			DoNMI=0; DoHalt=0;
-			IRQ_Enable2=IRQ_Enable1; IRQ_Enable1=0;
+			IRQ_Enable1=0;
 			PutValue(--_sp,HIBYTE(_pc));
 			PutValue(--_sp,LOBYTE(_pc));
 			_pc=0x0066;
@@ -229,7 +209,7 @@ int Emulate(int mode) {
 				  	_pc=0x0038;
 				  	break;
 				  case 2:
-				  	_pc=(((SWORD)_i) << 8) | (0 /*bus_dati*/ << 1) | 0;
+            
 				  	break;
 				  }
 				}
@@ -272,47 +252,328 @@ int Emulate(int mode) {
     		if(Pipe1 & 0b0000100000000000) {    // SLA SRA SRC SRL
           switch(Pipe1 & 0b1111111100000000) {
             case 0b00001010 << 8:     // SLA Shift left arithmetic
+              _f.Carry= WORKING_REG & 0x80 ? 1 : 0;
+              WORKING_REG <<= 1;
+              res3.b.l=WORKING_REG;
+              goto aggRotate2;
               break;
             case 0b00001000 << 8:     // SRA Shift right arithmetic
+              _f.Carry=WORKING_REG & 0x1;
+              WORKING_REG >>= 1;
+              if(WORKING_REG & 0x40)
+                WORKING_REG |= 0x80;
+              res3.b.l=WORKING_REG;
+              goto aggRotate2;
               break;
-            case 0b00001011 << 8:     // SLA Shift right circular
+            case 0b00001011 << 8:     // SRC Shift right circular
+              _f.Carry=_a & 1;
+              _a >>= 1;
+              if(_f.Carry)
+                _a |= 0x80;
+              goto aggRotate;
               break;
-            case 0b00001001 << 8:     // SLA Shift right logical
+            case 0b00001001 << 8:     // SRL Shift right logical
+              _f.Carry=WORKING_REG & 0x1;
+              WORKING_REG >>= 1;
+              if(WORKING_REG & 0x40)
+                WORKING_REG |= 0x80;
+              res3.b.l=WORKING_REG;
+              goto aggRotate2;
               break;
             }
           }
         else {
           switch(Pipe1 & 0b1111111111000000) {
+            case 0b0000001000 << 6:     // AI ANDI CI LI ORI
+              switch(Pipe1 & 0b1111111111100000) {
+                case 0b00000010001 << 5:     // AI Add immediate
+                  res1.x=WORKING_REG;
+                  res2.x=Pipe2.x;
+                  res3.x=(uint32_t)res1.x+(uint32_t)res2.x;
+                  
+                  WORKING_REG=res3.x;
+                  break;
+                case 0b00000010010 << 5:     // ANDI AND immediate
+                  res1.x=WORKING_REG;
+                  res2.x=Pipe2.x;
+                  res3.x=res1.x & res2.x;
+                  
+                  break;
+                case 0b00000010100 << 5:     // CI Compare immediate
+                  res1.x=WORKING_REG;
+                  res2.x=Pipe2.x;
+                  res3.x=(uint32_t)res1.x-(uint32_t)res2.x;
+                  break;
+                case 0b00000010000 << 5:     // LI Load immediate
+                  WORKING_REG=Pipe2.x;
+                  res3.x=WORKING_REG;
+                  break;
+                case 0b00000010011 << 5:     // ORI OR immediate
+                  res1.x=WORKING_REG;
+                  res2.x=Pipe2.x;
+                  res3.x=res1.x | res2.x;
+
+                  break;
+                }
+              break;
+              
             case 0b0000010001 << 6:     // B Branch
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  _pc=WORKING_REG;
+                  break;
+                case REGISTER_INDIRECT:
+                  _pc=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
               break;
             case 0b0000011010 << 6:     // BL Branch and Link
+              regs1.r[14].x=_pc;
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  _pc=WORKING_REG;
+                  break;
+                case REGISTER_INDIRECT:
+                  _pc=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
               break;
             case 0b0000010000 << 6:     // BLWP Branch and Load Workspace Pointer
+              regs1.r[13].x=_wp;
+              regs1.r[14].x=_pc;
+              regs1.r[15].x=_st.x;
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  _wp=WORKING_REG;
+                  break;
+                case REGISTER_INDIRECT:
+                  res3.x=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
+              
+              _pc=WORKING_REG +2;
               break;
             case 0b0000010011 << 6:     // CLR Clear Operand
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  WORKING_REG=0;
+                  break;
+                case REGISTER_INDIRECT:
+                  res3.x=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
               break;
             case 0b0000011100 << 6:     // SETO Set To Ones
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  WORKING_REG=0xffff;
+                  break;
+                case REGISTER_INDIRECT:
+                  res3.x=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
               break;
             case 0b0000010101 << 6:     // INV Invert
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  WORKING_REG=~WORKING_REG;
+                  break;
+                case REGISTER_INDIRECT:
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
               break;
             case 0b0000010100 << 6:     // NEG Negate
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  WORKING_REG=-WORKING_REG;
+                  break;
+                case REGISTER_INDIRECT:
+                  res3.x=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
+              goto aggFlag;
               break;
             case 0b0000011101 << 6:     // ABS Absolute Value
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  WORKING_REG=abs(WORKING_REG);
+                  break;
+                case REGISTER_INDIRECT:
+                  res3.x=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
+              goto aggFlag;
               break;
             case 0b0000011011 << 6:     // SWPB Swap Bytes
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  WORKING_REG=MAKEWORD(HIBYTE(WORKING_REG),LOBYTE(WORKING_REG));
+                  break;
+                case REGISTER_INDIRECT:
+                  res3.x=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
               break;
             case 0b0000010110 << 6:     // INC Increment
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  WORKING_REG++;
+                  res3.x=WORKING_REG;
+                  break;
+                case REGISTER_INDIRECT:
+                  res3.x=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
+              
+aggFlagI:              
               break;
             case 0b0000010111 << 6:     // INCT Increment by Two
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  WORKING_REG+=2;
+                  res3.x=WORKING_REG;
+                  break;
+                case REGISTER_INDIRECT:
+                  res3.x=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
+              goto aggFlagI;
               break;
             case 0b0000011000 << 6:     // DEC Decrement
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  WORKING_REG--;
+                  res3.x=WORKING_REG;
+                  break;
+                case REGISTER_INDIRECT:
+                  res3.x=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
+              goto aggFlagI;
               break;
-            case 0b0000011101 << 6:     // DECT Decrement by Two
+            case 0b0000011001 << 6:     // DECT Decrement by Two
+              switch(WORKING_TS) {
+                case REGISTER_DIRECT:
+                  WORKING_REG-=2;
+                  res3.x=WORKING_REG;
+                  break;
+                case REGISTER_INDIRECT:
+                  res3.x=GetIntValue(WORKING_REG);
+                  break;
+                case REGISTER_SYMBOLIC_INDEXED:
+                  break;
+                case REGISTER_INDIRECT_AUTOINCREMENT:
+                  break;
+                }
+              goto aggFlagI;
               break;
             case 0b0000010010 << 6:     // X Execute
               break;
               
-            case 0b0000010010 << 6:     // X Execute
+            case 0b0000001011 << 6:     // LWPI LIMI
+              switch(Pipe1 & 0b1111111111100000) {
+                case 0b00000010111 << 5:     // LWPI Load workspace pointer immediate
+                  _wp=Pipe2.x;
+                  break;
+                  
+                case 0b00000010110 << 5:     // STST Store status register
+                  WORKING_REG=_st.x;
+                  break;
+                }
+              break;
+            case 0b0000001100 << 6:     // LWPI LIMI
+              switch(Pipe1 & 0b1111111111100000) {
+                case 0b00000011000 << 5:     // LIMI Load interrupt mask
+                  _st.x=(_st.x & 0b0000111111111111) | (Pipe2.x & 0b1111000000000000);
+                  break;
+                }
+              break;
+            case 0b0000001010 << 6:     // STWP
+              switch(Pipe1 & 0b1111111111100000) {
+                case 0b00000010101 << 5:     // STWP Store workspace pointer
+                  WORKING_REG=_wp;
+                  break;
+                }
+              break;
+              
+            case 0b0000001110 << 6:     // RTWP
+              switch(Pipe1 & 0b1111111111100000) {
+                case 0b00000011100 << 5:     // RTWP Return workspace pointer
+                  _st.x=regs1.r[15].x;
+                  _pc=regs1.r[14].x;
+                  _wp=regs1.r[13].x;
+                  break;
+                }
+              break;
+              
+            case 0b0000001101 << 6:     // IDLE
+              switch(Pipe1 & 0b1111111111100000) {
+                case 0b00000011010 << 5:     // IDLE
+          			  DoHalt=1;
+                  break;
+                case 0b00000011011 << 5:     // RSET
+                  _st.x &= 0b0000111111111111;
+                  break;
+                }
+              break;
+
+            case 0b0000001111 << 6:     // CKOF CKON LREX
+              switch(Pipe1 & 0b1111111111100000) {
+                case 0b00000011110 << 5:     // CKOF
+                  break;
+                case 0b00000011101 << 5:     // CKON
+                  break;
+                case 0b00000011111 << 5:     // LREX
+                  break;
+                }
               break;
             }
           }
@@ -321,39 +582,119 @@ int Emulate(int mode) {
       case 0b0001 << 12:
     		switch(Pipe1 & 0b1111111100000000) {
           case 0b00010011 << 8:     // JEQ Jump equal
+            if(_st.Zero)
+              goto Jump;
             break;
           case 0b00010101 << 8:     // JGT Jump greater than
+            if(_st.ArithmeticGreater)
+              goto Jump;
             break;
           case 0b00011011 << 8:     // JH Jump high
+            if(_st.LogicalGreater && !_st.Zero)
+              goto Jump;
             break;
           case 0b00010100 << 8:     // JHE Jump high or equal
+            if(_st.LogicalGreater || _st.Zero)
+              goto Jump;
             break;
           case 0b00011010 << 8:     // JL Jump low
+            if(!_st.LogicalGreater && !_st.Zero)
+              goto Jump;
             break;
           case 0b00010010 << 8:     // JLE Jump low or equal
+            if(!_st.LogicalGreater || _st.Zero)
+              goto Jump;
             break;
           case 0b00010001 << 8:     // JLT Jump less than
+            if(!_st.ArithmeticGreater && !_st.Zero)
+              goto Jump;
             break;
           case 0b00010000 << 8:     // JMP Jump unconditional
 Jump:
-    				_pc=Pipe2.x;
+    				_pc += (int8_t)LOBYTE(Pipe1);
             break;
           case 0b00010111 << 8:     // JNC Jump no carry
+            if(!_st.Carry)
+              goto Jump;
             break;
           case 0b00010110 << 8:     // JNE Jump not equal
+            if(!_st.Zero)
+              goto Jump;
             break;
           case 0b00011001 << 8:     // JNO Jump no overflow
+            if(!_st.Overflow)
+              goto Jump;
             break;
           case 0b00011000 << 8:     // JOC Jump carry
+            if(_st.Carry)
+              goto Jump;
             break;
           case 0b00011100 << 8:     // JOP Jump odd parity
+            if(_st.Parity)
+              goto Jump;
             break;
           }
         break;
         
       case 0b1010 << 12:    // A Add
+        switch(WORKING_TS) {
+          case REGISTER_DIRECT:
+            res1.x=WORKING_REG;
+            break;
+          case REGISTER_INDIRECT:
+            res1.x=GetIntValue(WORKING_REG);
+            break;
+          case REGISTER_SYMBOLIC_INDEXED:
+            break;
+          case REGISTER_INDIRECT_AUTOINCREMENT:
+            res1.x=GetIntValue(WORKING_REG);
+            WORKING_REG+=2;
+            break;
+          }
+        switch(WORKING_TD) {
+          case REGISTER_DIRECT:
+            res2.x=WORKING_REG2;
+            break;
+          case REGISTER_INDIRECT:
+            res1.x=GetIntValue(WORKING_REG2);
+            break;
+          case REGISTER_SYMBOLIC_INDEXED:
+            break;
+          case REGISTER_INDIRECT_AUTOINCREMENT:
+            res1.x=GetIntValue(WORKING_REG2);
+            WORKING_REG2+=2;
+            break;
+          }
         break;
       case 0b1011 << 12:    // AB Add bytes
+        switch(WORKING_TS) {
+          case REGISTER_DIRECT:
+            res1.b=LOBYTE(WORKING_REG);
+            break;
+          case REGISTER_INDIRECT:
+            res1.b=GetValue(WORKING_REG);
+            break;
+          case REGISTER_SYMBOLIC_INDEXED:
+            break;
+          case REGISTER_INDIRECT_AUTOINCREMENT:
+            res1.b=GetValue(WORKING_REG);
+            WORKING_REG++;
+            break;
+          }
+        switch(WORKING_TD) {
+          case REGISTER_DIRECT:
+            res2.b=LOBYTE(WORKING_REG);
+            break;
+          case REGISTER_INDIRECT:
+            res2.b=GetValue(WORKING_REG);
+            break;
+          case REGISTER_SYMBOLIC_INDEXED:
+            break;
+          case REGISTER_INDIRECT_AUTOINCREMENT:
+            res1.b=GetValue(WORKING_REG2);
+            WORKING_REG2++;
+            break;
+          }
         break;
 
       case 0b1000 << 12:    // C Compare
@@ -371,9 +712,9 @@ Jump:
       case 0b1111 << 12:    // SOCB Set Ones Corresponding bytes  
         break;
       
-      case 0b1110 << 12:    // SZC Set Zeros Corresponding
+      case 0b0100 << 12:    // SZC Set Zeros Corresponding
         break;
-      case 0b1111 << 12:    // SZCB Set Zeros Corresponding bytes  
+      case 0b0101 << 12:    // SZCB Set Zeros Corresponding bytes  
         break;
       
       case 0b1100 << 12:    // MOV Move
@@ -408,7 +749,7 @@ Jump:
           case 0b001101 << 10:     // STCR Store communication register
             break;
             
-          case 0b001111 << 10:     // SBO SBZ TB
+          case 0b000111 << 10:     // SBO SBZ TB
         		switch(Pipe1 & 0b1111111100000000) {
               case 0b00111101 << 8:     // SBO Set bit to one
                 break;
@@ -422,8 +763,7 @@ Jump:
         break;
 
         
-			case 0:   // NOP
-				break;
+
 
 			case 1:   // LD BC,nn ecc
 			case 0x11:
@@ -769,10 +1109,6 @@ aggRotate:
 				PutValue(_hl,/* regs1.b[((Pipe1 & 7) +1) & 7]*/ WORKING_REG2);
 				break;
         
-			case 0x76:    // HALT
-			  DoHalt=1;
-				break;
-
 			case 0x80:    // ADD A,r
 			case 0x81:
 			case 0x82:
@@ -1502,12 +1838,6 @@ aggBit:
 					}
 				break;
 
-			case 0xcc:    // CALL z
-			  if(_f.Zero)
-			    goto Call;
-			  else
-			    _pc+=2;
-				break;
 
 			case 0xcd:		// CALL
 Call:
@@ -1522,29 +1852,6 @@ Call:
         goto aggSommaC;
 				break;
 
-			case 0xd0:    // RET nc
-			  if(!_f.Carry)
-			    goto Return;
-				break;
-
-			case 0xd2:    // JP nc
-			  if(!_f.Carry)
-			    goto Jump;
-			  else
-			    _pc+=2;
-				break;
-
-			case 0xd3:    // OUT
-				OutValue(MAKEWORD(Pipe2.b.l,_a),_a);
-				_pc++;
-				break;
-
-			case 0xd4:    // CALL nc
-			  if(!_f.Carry)
-			    goto Call;
-			  else
-			    _pc+=2;
-				break;
 
 			case 0xd6:    // SUB n
   		  res2.b.l=Pipe2.b.l;
@@ -1575,17 +1882,6 @@ Call:
 			    _pc+=2;
 				break;
 
-			case 0xdb:    // IN a,  NON tocca flag
-				_pc++;
-				_a=InValue(MAKEWORD(Pipe2.b.l,_a));
-				break;
-
-			case 0xdc:    // CALL c
-			  if(_f.Carry)
-			    goto Call;
-			  else
-			    _pc+=2;
-				break;
 
 			case 0xdd:
 				switch(GetPipe(_pc++)) {

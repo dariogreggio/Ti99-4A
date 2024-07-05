@@ -38,9 +38,10 @@ volatile BYTE TIMIRQ,VIDIRQ;
 volatile WORD TIMEr;
 BYTE TMS9918Reg[8],TMS9918RegS,TMS9918Sel,TMS9918WriteStage,TMS9918Buffer;
 WORD TMS9918RAMPtr;
-BYTE AY38910RegR[16],AY38910RegW[16],AY38910RegSel;
+BYTE TMS9919[1];    // https://www.unige.ch/medecine/nouspikel/ti99/tms9919.htm
+BYTE TMS9901[32];   // https://www.unige.ch/medecine/nouspikel/ti99/tms9901.htm
 BYTE VideoRAM[VIDEORAM_SIZE];
-BYTE Keyboard[8]={255,255,255,255,255,255,255,255,255,255,255};
+BYTE Keyboard[8]={255,255,255,255,255,255,255,255};
 
 extern volatile BYTE keysFeedPtr;
 
@@ -70,13 +71,23 @@ BYTE GetValue(SWORD t) {
 	else if(t >= RAM_START && t < (RAM_START+RAM_SIZE)) {
 		i=ram_seg[t-RAM_START];
 		}
-
-	return i;
-	}
-
-BYTE InValue(SWORD t) {    // OCCHIO pare che siano 16bit anche I/O!
-	register BYTE i,j;
-
+	else if(t == 0x8400) {		// sound
+    i=TMS9919[0];
+		}
+	else if(t == 0x8800) {		// VDP read data
+    TMS9918WriteStage=0;
+    i=TMS9918Buffer;
+    TMS9918Buffer=VideoRAM[(TMS9918RAMPtr++) & (VIDEORAM_SIZE-1)];
+		}
+	else if(t == 0x8802) {		// VDP read status register
+    i=TMS9918RegS;
+    TMS9918RegS &= 0x7f;
+    TMS9918WriteStage=0;
+		}
+	else if(t == 0x8c00) {		// VDP write data
+		}
+	else if(t == 0x8c02) {		// VDP write register
+		}
 
 	return i;
 	}
@@ -98,7 +109,7 @@ SWORD GetIntValue(SWORD t) {
 uint8_t GetPipe(uint16_t t) {
 
 	if(t < ROM_SIZE) {			//
-	  Pipe1=MAKEWORD(rom_seg[t],rom_seg[t+1)];
+	  Pipe1=MAKEWORD(rom_seg[t],rom_seg[t+1]);
 		Pipe2.b.l=rom_seg[t++];
 //		Pipe2.b.h=rom_seg[t++];
 //		Pipe2.b.u=rom_seg[t];
@@ -106,7 +117,7 @@ uint8_t GetPipe(uint16_t t) {
 		}
 	else if(t >= RAM_START && t < (RAM_START+RAM_SIZE)) {
 		t-=RAM_START;
-	  Pipe1=MAKEWORD(ram_seg[t],ram_seg[t+1)];
+	  Pipe1=MAKEWORD(ram_seg[t],ram_seg[t+1]);
 		Pipe2.b.l=ram_seg[t++];
 //		Pipe2.b.h=ram_seg[t++];
 //		Pipe2.b.u=ram_seg[t];
@@ -121,8 +132,39 @@ void PutValue(SWORD t,BYTE t1) {
 
 // printf("rom_seg: %04x, p: %04x\n",rom_seg,p);
 
-	if(t >= RAM_START && t < (RAM_START+RAM_SIZE)) {		// ZX80,81,Galaksija
+	if(t >= RAM_START && t < (RAM_START+RAM_SIZE)) {
 	  ram_seg[t-RAM_START]=t1;
+		}
+	else if(t == 0x8400) {		// sound
+    TMS9919[0]=t1;
+		}
+	else if(t == 0x8800) {		// VDP read data
+		}
+	else if(t == 0x8802) {		// VDP read status register
+		}
+	else if(t == 0x8c00) {		// VDP write data
+      TMS9918WriteStage=0;
+      VideoRAM[(TMS9918RAMPtr++) & (VIDEORAM_SIZE-1)]=t1;
+      TMS9918Buffer = t1;
+		}
+	else if(t == 0x8c02) {		// VDP write register
+      if(!TMS9918WriteStage) {   /* first stage byte - either an address LSB or a register value */
+        TMS9918Sel = t1;
+        TMS9918WriteStage = 1;
+        }
+      else {    /* second byte - either a register number or an address MSB */
+        if(t1 & 0x80) { /* register */
+//          if((t1 & 0x7f) < 8)
+            TMS9918Reg[t1 & 0x07] = TMS9918Sel;
+          }
+        else {  /* address */
+          TMS9918RAMPtr = TMS9918Sel | ((t1 & 0x3f) << 8);
+          if(!(t1 & 0x40)) {
+            TMS9918Buffer = VideoRAM[(TMS9918RAMPtr++) & (VIDEORAM_SIZE-1)];
+            }
+          }
+        TMS9918WriteStage = 0;
+        } 
 		}
 
 	}
@@ -138,20 +180,16 @@ void PutIntValue(SWORD t,SWORD t1) {
 	  ram_seg[t]=HIBYTE(t1);
 		}
 
-}
+  }
 
-void OutValue(SWORD t,BYTE t1) {   // 
-	register SWORD i;
-
-
-}
 
 
 void initHW(void) {
   int i;
   
-	AY38910RegR[14]=AY38910RegR[15]=0b11111111;
-  AY38910RegSel=0;
+	TMS9919[1]=0b00000000;
+  TMS9901[0]=0;
+  
   memset(VideoRAM,0,0x4000);    // mah...
   TMS9918Reg[0]=TMS_R0_EXT_VDP_DISABLE | TMS_R0_MODE_GRAPHICS_I;
   TMS9918Reg[1]=TMS_R1_RAM_16K | TMS_R1_MODE_GRAPHICS_I /* bah   | TMS_R1_DISP_ACTIVE | TMS_R1_INT_ENABLE*/;

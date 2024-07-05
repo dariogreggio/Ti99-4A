@@ -103,7 +103,7 @@ extern BYTE rom_seg[],rom_seg2[];
 extern BYTE TMS9918Reg[8],TMS9918RegS,TMS9918Sel,TMS9918WriteStage;
 extern BYTE AY38910RegR[16],AY38910RegW[16],AY38910RegSel;
 extern BYTE VideoRAM[VIDEORAM_SIZE];
-extern volatile BYTE TIMIRQ;
+extern volatile BYTE TIMIRQ,VIDIRQ;
 extern BYTE Keyboard[8];
 volatile PIC32_RTCC_DATE currentDate={1,1,0};
 volatile PIC32_RTCC_TIME currentTime={0,0,0};
