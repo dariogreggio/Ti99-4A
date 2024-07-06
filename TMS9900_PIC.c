@@ -89,7 +89,7 @@
 
 
 const char CopyrightString[]= {'T','M','S','9','9','0','0',' ','E','m','u','l','a','t','o','r',' ','v',
-	VERNUMH+'0','.',VERNUML/10+'0',(VERNUML % 10)+'0',' ','-',' ', '0','5','/','0','7','/','2','4', 0 };
+	VERNUMH+'0','.',VERNUML/10+'0',(VERNUML % 10)+'0',' ','-',' ', '0','6','/','0','7','/','2','4', 0 };
 
 const char Copyr1[]="(C) Dario's Automation 2022-2024 - G.Dar\xd\xa\x0";
 
@@ -97,11 +97,12 @@ const char Copyr1[]="(C) Dario's Automation 2022-2024 - G.Dar\xd\xa\x0";
 
 // Global Variables:
 BOOL fExit,debug;
-extern BYTE DoIRQ,DoNMI,DoHalt,DoReset,ColdReset;
+extern BYTE DoIRQ,DoLoad,DoIdle,DoReset,ColdReset;
 extern BYTE ram_seg[];
-extern BYTE rom_seg[],rom_seg2[];
+extern BYTE rom_seg[],rom_seg2[],grom_seg[];
 extern BYTE TMS9918Reg[8],TMS9918RegS,TMS9918Sel,TMS9918WriteStage;
-extern BYTE AY38910RegR[16],AY38910RegW[16],AY38910RegSel;
+extern BYTE TMS9919[1]; 
+extern BYTE TMS9901[32];
 extern BYTE VideoRAM[VIDEORAM_SIZE];
 extern volatile BYTE TIMIRQ,VIDIRQ;
 extern BYTE Keyboard[8];
@@ -538,9 +539,10 @@ handle_sprites:
   
 
 
-extern const unsigned char TI994A_BIN[],TI994A_BIN2[];
+extern const unsigned char TI994A_BIN_GROM[],TI994A_BIN2[],TI994A_BIN_U610[],TI994A_BIN_U611[];
 
 int main(void) {
+  int i;
 
   // disable JTAG port
 //  DDPCONbits.JTAGEN = 0;
@@ -664,7 +666,12 @@ int main(void) {
 #endif
   
 
-  memcpy(rom_seg,TI994A_BIN,0x1800);
+//  memcpy(rom_seg,TI994A_BIN,0x1800);
+  memcpy(grom_seg,TI994A_BIN_GROM,0x1800);
+  for(i=0; i<8192; i+=2) {
+    rom_seg[i]=TI994A_BIN_U611[i/2];
+    rom_seg[i+1]=TI994A_BIN_U610[i/2];
+    }
 
         
 	ColdReset=0;

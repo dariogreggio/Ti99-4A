@@ -17,15 +17,17 @@ BYTE fExit=0;
 BYTE debug=0;
 #define UNIMPLEMENTED_MEMORY_VALUE 0xFF
 #define RAM_START 0x8000
-#define RAM_SIZE 32768
+#define RAM_SIZE 256
 //#define RAM_START 0xc000
 //#define RAM_SIZE 16384 ma DEVE partire dal Top!!
 //#define RAM_START 0xf000  // per VELOCIZZAER debug!
 //#define RAM_SIZE 4096 // ma DEVE partire dal Top!!
-#define RAM_SIZE2 65536
-#define RAM_START2 0x0000   // in slot 2, v.sotto
+//#define RAM_SIZE2 65536
+//#define RAM_START2 0x0000   // in slot 2, v.sotto
 #define ROM_START 0x0000
-#define ROM_SIZE 32768
+#define ROM_SIZE 8192
+#define GROM_START 0x0000
+#define GROM_SIZE (3*0x2000)    // in effetti 3 da 0x1800.. v. sotto
 BYTE ram_seg[RAM_SIZE];
 #ifdef RAM_SIZE2 
 BYTE ram_seg2[RAM_SIZE2];
@@ -34,6 +36,7 @@ BYTE rom_seg[ROM_SIZE];
 #ifdef ROM_SIZE2 
 BYTE rom_seg2[ROM_SIZE2];
 #endif
+BYTE grom_seg[GROM_SIZE];			
 volatile BYTE TIMIRQ,VIDIRQ;
 volatile WORD TIMEr;
 BYTE TMS9918Reg[8],TMS9918RegS,TMS9918Sel,TMS9918WriteStage,TMS9918Buffer;
@@ -68,8 +71,8 @@ BYTE GetValue(SWORD t) {
 	if(t < ROM_SIZE) {			//
 		i=rom_seg[t];
 		}
-	else if(t >= RAM_START && t < (RAM_START+RAM_SIZE)) {
-		i=ram_seg[t-RAM_START];
+	else if(t >= RAM_START && t < (RAM_START+RAM_SIZE*4)) {   // 256, mirrored
+		i=ram_seg[(t-RAM_START) & 0xff];
 		}
 	else if(t == 0x8400) {		// sound
     i=TMS9919[0];
@@ -88,6 +91,24 @@ BYTE GetValue(SWORD t) {
 		}
 	else if(t == 0x8c02) {		// VDP write register
 		}
+/*	else if(t >= 0x1300 && t < 0x1400) {		// RS232/Timer (CRU?? https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
+		}
+	else if(t >= 0x0000 && t < 0x0400) {		// Keyboard (CRU?? https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
+		}*/
+	else if(t == 0x9800) {		// GROM read 
+    if(t >= GROM_START && t < (GROM_START+GROM_SIZE)) {   // 
+      i=grom_seg[t-GROM_START];
+      }
+    }
+	else if(t == 0x9802) {		// GROM read address
+		}
+	else if(t == 0x9c00) {		// GROM write data
+    if(t >= GROM_START && t < (GROM_START+GROM_SIZE)) {   // 
+      i=grom_seg[t-GROM_START];
+      }
+		}
+	else if(t == 0x9c02) {		// GROM set address
+		}
 
 	return i;
 	}
@@ -98,8 +119,9 @@ SWORD GetIntValue(SWORD t) {
 	if(t < ROM_SIZE) {			//
 		i=MAKEWORD(rom_seg[t],rom_seg[t+1]);
 		}
-	else if(t >= RAM_START && t < (RAM_START+RAM_SIZE)) {
+	else if(t >= RAM_START && t < (RAM_START+RAM_SIZE*4)) {   // 256 bytes, mirrored
 		t-=RAM_START;
+    t &= 0xff;
 		i=MAKEWORD(ram_seg[t],ram_seg[t+1]);
 		}
 
@@ -110,30 +132,24 @@ uint8_t GetPipe(uint16_t t) {
 
 	if(t < ROM_SIZE) {			//
 	  Pipe1=MAKEWORD(rom_seg[t],rom_seg[t+1]);
-		Pipe2.b.l=rom_seg[t++];
-//		Pipe2.b.h=rom_seg[t++];
-//		Pipe2.b.u=rom_seg[t];
-		Pipe2.b.h=rom_seg[t];
+		Pipe2.x=MAKEWORD(rom_seg[t+2],rom_seg[t+3]);
 		}
-	else if(t >= RAM_START && t < (RAM_START+RAM_SIZE)) {
+	else if(t >= RAM_START && t < (RAM_START+RAM_SIZE*4)) {   // 256, mirrored NON SONO SICURO QUA ABBIA SENSO!
 		t-=RAM_START;
+		t &= 0xff;
 	  Pipe1=MAKEWORD(ram_seg[t],ram_seg[t+1]);
-		Pipe2.b.l=ram_seg[t++];
-//		Pipe2.b.h=ram_seg[t++];
-//		Pipe2.b.u=ram_seg[t];
-		Pipe2.b.h=ram_seg[t];
+		Pipe2.x=MAKEWORD(ram_seg[t+2],ram_seg[t+3]);
 		}
 
 	return Pipe1;
 	}
 
 void PutValue(SWORD t,BYTE t1) {
-	register SWORD i;
 
 // printf("rom_seg: %04x, p: %04x\n",rom_seg,p);
 
-	if(t >= RAM_START && t < (RAM_START+RAM_SIZE)) {
-	  ram_seg[t-RAM_START]=t1;
+	if(t >= RAM_START && t < (RAM_START+RAM_SIZE*4)) {   // 256, mirrored 
+	  ram_seg[(t-RAM_START) & 0xff]=t1;
 		}
 	else if(t == 0x8400) {		// sound
     TMS9919[0]=t1;
@@ -166,6 +182,10 @@ void PutValue(SWORD t,BYTE t1) {
         TMS9918WriteStage = 0;
         } 
 		}
+/*	else if(t >= 0x1300 && t < 0x1400) {		// RS232/Timer (CRU?? https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
+		}
+	else if(t >= 0x0000 && t < 0x0400) {		// Keyboard (CRU?? https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
+		}*/
 
 	}
 
