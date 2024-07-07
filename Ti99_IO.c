@@ -37,6 +37,8 @@ BYTE rom_seg[ROM_SIZE];
 BYTE rom_seg2[ROM_SIZE2];
 #endif
 BYTE grom_seg[GROM_SIZE];			
+WORD GROMPtr;
+BYTE GROMWriteStage,GROMBuffer;
 volatile BYTE TIMIRQ,VIDIRQ;
 volatile WORD TIMEr;
 BYTE TMS9918Reg[8],TMS9918RegS,TMS9918Sel,TMS9918WriteStage,TMS9918Buffer;
@@ -74,40 +76,42 @@ BYTE GetValue(SWORD t) {
 	else if(t >= RAM_START && t < (RAM_START+RAM_SIZE*4)) {   // 256, mirrored
 		i=ram_seg[(t-RAM_START) & 0xff];
 		}
-	else if(t == 0x8400) {		// sound
-    i=TMS9919[0];
-		}
-	else if(t == 0x8800) {		// VDP read data
-    TMS9918WriteStage=0;
-    i=TMS9918Buffer;
-    TMS9918Buffer=VideoRAM[(TMS9918RAMPtr++) & (VIDEORAM_SIZE-1)];
-		}
-	else if(t == 0x8802) {		// VDP read status register
-    i=TMS9918RegS;
-    TMS9918RegS &= 0x7f;
-    TMS9918WriteStage=0;
-		}
-	else if(t == 0x8c00) {		// VDP write data
-		}
-	else if(t == 0x8c02) {		// VDP write register
-		}
-/*	else if(t >= 0x1300 && t < 0x1400) {		// RS232/Timer (CRU?? https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
-		}
-	else if(t >= 0x0000 && t < 0x0400) {		// Keyboard (CRU?? https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
-		}*/
-	else if(t == 0x9800) {		// GROM read 
-    if(t >= GROM_START && t < (GROM_START+GROM_SIZE)) {   // 
-      i=grom_seg[t-GROM_START];
-      }
-    }
-	else if(t == 0x9802) {		// GROM read address
-		}
-	else if(t == 0x9c00) {		// GROM write data
-    if(t >= GROM_START && t < (GROM_START+GROM_SIZE)) {   // 
-      i=grom_seg[t-GROM_START];
-      }
-		}
-	else if(t == 0x9c02) {		// GROM set address
+	else switch(t) {
+    case 0x8400:		// sound
+      i=TMS9919[0];
+      break;
+    case 0x8800:		// VDP read data
+      TMS9918WriteStage=0;
+      i=TMS9918Buffer;
+      TMS9918Buffer=VideoRAM[(TMS9918RAMPtr++) & (VIDEORAM_SIZE-1)];
+      break;
+    case 0x8802:		// VDP read status register
+      i=TMS9918RegS;
+      TMS9918RegS &= 0x7f;
+      TMS9918WriteStage=0;
+      break;
+    case 0x8c00:		// VDP write data
+      break;
+    case 0x8c02:		// VDP write register
+      break;
+    case 0x9800:		// GROM read 
+      if(GROMPtr >= GROM_START && GROMPtr < (GROM_START+GROM_SIZE)) {   // 
+        i=grom_seg[GROMPtr-GROM_START];
+        }
+      GROMWriteStage;
+      break;
+    case 0x9802:		// GROM read address
+      GROMWriteStage;
+      break;
+    case 0x9c00:		// GROM write data
+      if(GROMPtr >= GROM_START && GROMPtr < (GROM_START+GROM_SIZE)) {   // 
+//      i=grom_seg[t-GROM_START];
+        }
+      GROMWriteStage;
+      break;
+    case 0x9c02:		// GROM set address
+      GROMWriteStage;
+      break;
 		}
 
 	return i;
@@ -126,6 +130,13 @@ SWORD GetIntValue(SWORD t) {
 		}
 
 	return i;
+	}
+
+BYTE GetValueCRU(SWORD t) {
+/*	else if(t >= 0x1300 && t < 0x1400) {		// RS232/Timer (CRU?? https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
+		}
+	else if(t >= 0x0000 && t < 0x0400) {		// Keyboard (CRU?? https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
+		}*/
 	}
 
 uint8_t GetPipe(uint16_t t) {
@@ -151,42 +162,73 @@ void PutValue(SWORD t,BYTE t1) {
 	if(t >= RAM_START && t < (RAM_START+RAM_SIZE*4)) {   // 256, mirrored 
 	  ram_seg[(t-RAM_START) & 0xff]=t1;
 		}
-	else if(t == 0x8400) {		// sound
-    TMS9919[0]=t1;
-		}
-	else if(t == 0x8800) {		// VDP read data
-		}
-	else if(t == 0x8802) {		// VDP read status register
-		}
-	else if(t == 0x8c00) {		// VDP write data
-      TMS9918WriteStage=0;
-      VideoRAM[(TMS9918RAMPtr++) & (VIDEORAM_SIZE-1)]=t1;
-      TMS9918Buffer = t1;
-		}
-	else if(t == 0x8c02) {		// VDP write register
-      if(!TMS9918WriteStage) {   /* first stage byte - either an address LSB or a register value */
-        TMS9918Sel = t1;
-        TMS9918WriteStage = 1;
-        }
-      else {    /* second byte - either a register number or an address MSB */
-        if(t1 & 0x80) { /* register */
-//          if((t1 & 0x7f) < 8)
-            TMS9918Reg[t1 & 0x07] = TMS9918Sel;
+	else 
+    switch(t) {
+      case 0x8400:		// sound
+        TMS9919[0]=t1;
+        break;
+      case 0x8800:		// VDP read data
+        break;
+      case 0x8802:		// VDP read status register
+        break;
+      case 0x8c00:	// VDP write data
+        TMS9918WriteStage=0;
+        VideoRAM[(TMS9918RAMPtr++) & (VIDEORAM_SIZE-1)]=t1;
+        TMS9918Buffer = t1;
+        break;
+      case 0x8c02:		// VDP write register
+        if(!TMS9918WriteStage) {   /* first stage byte - either an address LSB or a register value */
+          TMS9918Sel = t1;
+          TMS9918WriteStage = 1;
           }
-        else {  /* address */
-          TMS9918RAMPtr = TMS9918Sel | ((t1 & 0x3f) << 8);
-          if(!(t1 & 0x40)) {
-            TMS9918Buffer = VideoRAM[(TMS9918RAMPtr++) & (VIDEORAM_SIZE-1)];
+        else {    /* second byte - either a register number or an address MSB */
+          if(t1 & 0x80) { /* register */
+    //          if((t1 & 0x7f) < 8)
+              TMS9918Reg[t1 & 0x07] = TMS9918Sel;
             }
+          else {  /* address */
+            TMS9918RAMPtr = TMS9918Sel | ((t1 & 0x3f) << 8);
+            if(!(t1 & 0x40)) {
+              TMS9918Buffer = VideoRAM[(TMS9918RAMPtr++) & (VIDEORAM_SIZE-1)];
+              }
+            }
+          TMS9918WriteStage = 0;
+          } 
+        break;
+      case 0x9800:		// GROM read 
+        if(GROMPtr >= GROM_START && GROMPtr < (GROM_START+GROM_SIZE)) {   // 
           }
-        TMS9918WriteStage = 0;
-        } 
+        GROMWriteStage;
+        break;
+      case 0x9802:		// GROM read address
+        GROMWriteStage;
+        break;
+      case 0x9c00:		// GROM write data
+        if(GROMPtr >= GROM_START && GROMPtr < (GROM_START+GROM_SIZE)) {   // 
+//      i=grom_seg[t-GROM_START];
+          }
+        GROMWriteStage;
+        break;
+      case 0x9c02:		// GROM set address
+        if(!GROMWriteStage) {   /* first stage byte - either an address LSB or a register value */
+          GROMPtr = t1;
+          GROMWriteStage = 1;
+          }
+        else {    /* second byte - either a register number or an address MSB */
+          GROMPtr = (GROMPtr << 8) | t1;
+          GROMBuffer = grom_seg[(GROMPtr++) & (GROM_SIZE-1)];
+          GROMWriteStage = 0;
+        }
+      break;
 		}
+
+	}
+
+void PutValueCRU(SWORD t,BYTE t1) {
 /*	else if(t >= 0x1300 && t < 0x1400) {		// RS232/Timer (CRU?? https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
 		}
 	else if(t >= 0x0000 && t < 0x0400) {		// Keyboard (CRU?? https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
 		}*/
-
 	}
 
 void PutIntValue(SWORD t,SWORD t1) {

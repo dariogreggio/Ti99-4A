@@ -161,10 +161,10 @@ void putsUART1(unsigned int *buffer);
 
 int decodeKBD(int, long, BOOL);
 BYTE GetValue(SWORD);
+BYTE GetValueCRU(SWORD);
 SWORD GetIntValue(SWORD);
 void PutValue(SWORD, BYTE);
-BYTE InValue(SWORD);
-void OutValue(SWORD, BYTE);
+void PutValueCRU(SWORD, BYTE);
 int Emulate(int);
 
 int UpdateScreen(SWORD rowIni, SWORD rowFin);
