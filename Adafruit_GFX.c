@@ -31,6 +31,7 @@ modification, are permitted provided that the following conditions are met:
 #include "Adafruit_ST7735.h"
 
 #include <string.h>
+#include <stdint.h>
 //#include <sramalloc.h>
 
 
@@ -55,7 +56,7 @@ GFXfont *gfxFont;
 #endif
 
 #if defined(SSD1309)
-UINT8 lcd_dirty=0;
+uint8_t lcd_dirty=0;
 #endif
 
 
@@ -66,7 +67,7 @@ UINT8 lcd_dirty=0;
 ADAFRUIT_GFX _gfx;
 GRAPH_COORD_T _x, _y;
 UGRAPH_COORD_T _w, _h;
-UINT8 _textsize;
+uint8_t _textsize;
 UINT16 _outlinecolor, _fillcolor, _textcolor;
 char _label[10];
 
@@ -127,7 +128,7 @@ void drawCircle(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0, UGRAPH_COORD_T r, UINT16 c
 #endif
 	}
 
-void drawCircleHelper(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0, UGRAPH_COORD_T r, UINT8 cornername, UINT16 color) {
+void drawCircleHelper(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0, UGRAPH_COORD_T r, uint8_t cornername, UINT16 color) {
   GRAPH_COORD_T f     = 1 - r;
   GRAPH_COORD_T ddF_x = 1;
   GRAPH_COORD_T ddF_y = -2 * r;
@@ -172,7 +173,7 @@ void fillCircle(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0, UGRAPH_COORD_T r, UINT16 c
 	}
 
 // Used to do circles and roundrects
-void fillCircleHelper(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0, UGRAPH_COORD_T r, UINT8 cornername, GRAPH_COORD_T delta, UINT16 color) {
+void fillCircleHelper(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0, UGRAPH_COORD_T r, uint8_t cornername, GRAPH_COORD_T delta, UINT16 color) {
   GRAPH_COORD_T f     = 1 - r;
   GRAPH_COORD_T ddF_x = 1;
   GRAPH_COORD_T ddF_y = -2 * r;
@@ -334,9 +335,9 @@ void fillTriangle(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0, UGRAPH_COORD_T x1, UGRAP
 // Draw a 1-bit image (bitmap) at the specified (x,y) position from the
 // provided bitmap buffer (must be PROGMEM memory) using the specified
 // foreground color (unset bits are transparent).
-void drawBitmap(UGRAPH_COORD_T x, UGRAPH_COORD_T y, const UINT8 *bitmap, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color) {
+void drawBitmap(UGRAPH_COORD_T x, UGRAPH_COORD_T y, const uint8_t *bitmap, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color) {
   GRAPH_COORD_T i, j, byteWidth = (w+7) / 8;
-  UINT8 byte=0;
+  uint8_t byte=0;
 
   for(j=0; j<h; j++) {
     for(i=0; i<w; i++) {
@@ -353,9 +354,9 @@ void drawBitmap(UGRAPH_COORD_T x, UGRAPH_COORD_T y, const UINT8 *bitmap, UGRAPH_
 // Draw a 1-bit image (bitmap) at the specified (x,y) position from the
 // provided bitmap buffer (must be PROGMEM memory) using the specified
 // foreground (for set bits) and background (for clear bits) colors.
-void drawBitmapBG(UGRAPH_COORD_T x, UGRAPH_COORD_T y, const UINT8 *bitmap, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color, UINT16 bg) {
+void drawBitmapBG(UGRAPH_COORD_T x, UGRAPH_COORD_T y, const uint8_t *bitmap, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color, UINT16 bg) {
   GRAPH_COORD_T i, j, byteWidth = (w + 7) / 8;
-  UINT8 byte=0;
+  uint8_t byte=0;
 
   for(j=0; j<h; j++) {
     for(i=0; i<w; i++ ) {
@@ -372,12 +373,12 @@ void drawBitmapBG(UGRAPH_COORD_T x, UGRAPH_COORD_T y, const UINT8 *bitmap, UGRAP
 	}
 
 
-void drawBitmap4(UGRAPH_COORD_T x, UGRAPH_COORD_T y, const UINT8 *bitmap) {
-  GRAPH_COORD_T i,j;
-  GRAPH_COORD_T h,w;
-  UINT8 b,*p,c1,c2,c3;
-  DWORD l;
-  GFX_COLOR c;
+void drawBitmap4(UGRAPH_COORD_T x, UGRAPH_COORD_T y, const uint8_t *bitmap) {
+  UGRAPH_COORD_T i,j;
+  UGRAPH_COORD_T h,w;
+  uint8_t b,*p,c1,c2,c3;
+  uint32_t l;
+  uint16_t /*GFX_COLOR*/ c;
   
   w=MAKEWORD(bitmap[4],bitmap[5]);
   h=MAKEWORD(bitmap[8],bitmap[9]);
@@ -407,9 +408,9 @@ void drawBitmap4(UGRAPH_COORD_T x, UGRAPH_COORD_T y, const UINT8 *bitmap) {
 
 #ifdef RAM_BITMAP
 // drawBitmap() variant for RAM-resident (not PROGMEM) bitmaps.
-void drawBitmap3(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UINT8 *bitmap, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color) {
+void drawBitmap3(UGRAPH_COORD_T x, UGRAPH_COORD_T y, uint8_t *bitmap, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color) {
   GRAPH_COORD_T i, j, byteWidth = (w + 7) / 8;
-  UINT8 byte;
+  uint8_t byte;
 
   for(j=0; j<h; j++) {
     for(i=0; i<w; i++ ) {
@@ -424,9 +425,9 @@ void drawBitmap3(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UINT8 *bitmap, UGRAPH_COORD
 	}
 
 // drawBitmap() variant w/background for RAM-resident (not PROGMEM) bitmaps.
-void drawBitmap4(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UINT8 *bitmap, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color, UINT16 bg) {
+void drawBitmap4(UGRAPH_COORD_T x, UGRAPH_COORD_T y, uint8_t *bitmap, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color, UINT16 bg) {
   GRAPH_COORD_T i, j, byteWidth = (w + 7) / 8;
-  UINT8 byte;
+  uint8_t byte;
 
   for(j=0; j<h; j++) {
     for(i=0; i<w; i++ ) {
@@ -446,10 +447,10 @@ void drawBitmap4(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UINT8 *bitmap, UGRAPH_COORD
 //Usage: Export from GIMP to *.xbm, rename *.xbm to *.c and open in editor.
 //C Array can be directly used with this function
 void drawXBitmap(UGRAPH_COORD_T x, UGRAPH_COORD_T y,
-  const UINT8 *bitmap, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color) {
+  const uint8_t *bitmap, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color) {
 
   GRAPH_COORD_T i, j, byteWidth = (w + 7) / 8;
-  UINT8 byte;
+  uint8_t byte;
 
   for(j=0; j<h; j++) {
     for(i=0; i<w; i++ ) {
@@ -465,7 +466,7 @@ void drawXBitmap(UGRAPH_COORD_T x, UGRAPH_COORD_T y,
 #endif
 
 
-size_t cwrite(UINT8 c) {
+size_t cwrite(uint8_t c) {
 
 #ifdef USE_CUSTOM_FONTS 
   if(!gfxFont) { // 'Classic' built-in font
@@ -494,14 +495,14 @@ size_t cwrite(UINT8 c) {
     if(c == '\n') {
       cursor_x  = 0;
       cursor_y += (GRAPH_COORD_T)textsize *
-                  (UINT8)pgm_read_byte(&gfxFont->yAdvance);
+                  (uint8_t)pgm_read_byte(&gfxFont->yAdvance);
   	  } 
 		else if(c != '\r') {
-      UINT8 first = pgm_read_byte(&gfxFont->first);
-      if((c >= first) && (c <= (UINT8)pgm_read_byte(&gfxFont->last))) {
-        UINT8   c2    = c - pgm_read_byte(&gfxFont->first);
+      uint8_t first = pgm_read_byte(&gfxFont->first);
+      if((c >= first) && (c <= (uint8_t)pgm_read_byte(&gfxFont->last))) {
+        uint8_t   c2    = c - pgm_read_byte(&gfxFont->first);
         GFXglyph *glyph = &(((GFXglyph *)pgm_read_pointer(&gfxFont->glyph))[c2]);
-        UINT8   w     = pgm_read_byte(&glyph->width),
+        uint8_t   w     = pgm_read_byte(&glyph->width),
                   h     = pgm_read_byte(&glyph->height);
         if((w > 0) && (h > 0)) { // Is there an associated bitmap?
           GRAPH_COORD_T xo = (INT8)pgm_read_byte(&glyph->xOffset); // sic
@@ -509,7 +510,7 @@ size_t cwrite(UINT8 c) {
             // Drawing character would go off right edge; wrap to new line
             cursor_x  = 0;
             cursor_y += (GRAPH_COORD_T)textsize *
-                        (UINT8)pgm_read_byte(&gfxFont->yAdvance);
+                        (uint8_t)pgm_read_byte(&gfxFont->yAdvance);
           	}
           drawChar(cursor_x, cursor_y, c, textcolor, textbgcolor, textsize);
         	}
@@ -524,7 +525,7 @@ size_t cwrite(UINT8 c) {
 	}
 
 // Draw a character
-void drawChar(UGRAPH_COORD_T x, UGRAPH_COORD_T y, unsigned char c, UINT16 color, UINT16 bg, UINT8 size) {
+void drawChar(UGRAPH_COORD_T x, UGRAPH_COORD_T y, unsigned char c, UINT16 color, UINT16 bg, uint8_t size) {
 	INT8 i,j;
 	BYTE *fontPtr;
 
@@ -547,7 +548,7 @@ void drawChar(UGRAPH_COORD_T x, UGRAPH_COORD_T y, unsigned char c, UINT16 color,
 
 		fontPtr=font+((UINT16)c)*5;
     for(i=0; i<6; i++) {
-      UINT8 line;
+      uint8_t line;
       if(i<5) 
 				line = pgm_read_byte(fontPtr+i);
       else  
@@ -572,11 +573,11 @@ void drawChar(UGRAPH_COORD_T x, UGRAPH_COORD_T y, unsigned char c, UINT16 color,
 	  } 
 	else { // Custom font
     GFXglyph *glyph;
-    UINT8  *bitmap;
+    uint8_t  *bitmap;
     UINT16 bo;
-    UINT8  w, h, xa;
+    uint8_t  w, h, xa;
     INT8   xo, yo;
-    UINT8  xx, yy, bits, bit = 0;
+    uint8_t  xx, yy, bits, bit = 0;
     GRAPH_COORD_T  xo16, yo16;
 
     // Character is assumed previously filtered by write() to eliminate
@@ -585,7 +586,7 @@ void drawChar(UGRAPH_COORD_T x, UGRAPH_COORD_T y, unsigned char c, UINT16 color,
 
     c -= pgm_read_byte(&gfxFont->first);
     glyph  = &(((GFXglyph *)pgm_read_pointer(&gfxFont->glyph))[c]);
-    bitmap = (UINT8 *)pgm_read_pointer(&gfxFont->bitmap);
+    bitmap = (uint8_t *)pgm_read_pointer(&gfxFont->bitmap);
 
     bo = pgm_read_word(&glyph->bitmapOffset);
     w  = pgm_read_byte(&glyph->width),
@@ -646,7 +647,7 @@ void drawChar(UGRAPH_COORD_T x, UGRAPH_COORD_T y, unsigned char c, UINT16 color,
 	}
 
 
-void setTextSize(UINT8 s) {
+void setTextSize(uint8_t s) {
 
   textsize = (s > 0) ? s : 1;
 	}
@@ -669,7 +670,7 @@ void setTextWrap(BOOL w) {
   wrap = w;
 	}
 
-UINT8 getRotation(void) {
+uint8_t getRotation(void) {
 
   return rotation;
 	}
@@ -708,7 +709,7 @@ void setFont(const GFXfont *f) {
 
 // Pass string and a cursor position, returns UL corner and W,H.
 void getTextBounds(char *str, UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T *x1, UGRAPH_COORD_T *y1, UGRAPH_COORD_T *w, UGRAPH_COORD_T *h) {
-  UINT8 c; // Current character
+  uint8_t c; // Current character
 
   *x1 = x;
   *y1 = y;
@@ -718,13 +719,13 @@ void getTextBounds(char *str, UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T
   if(gfxFont) {
 
     GFXglyph *glyph;
-    UINT8   first = pgm_read_byte(&gfxFont->first),
+    uint8_t   first = pgm_read_byte(&gfxFont->first),
               last  = pgm_read_byte(&gfxFont->last),
               gw, gh, xa;
     INT8    xo, yo;
     GRAPH_COORD_T   minx = _width, miny = _height, maxx = -1, maxy = -1,
               gx1, gy1, gx2, gy2, ts = (GRAPH_COORD_T)textsize,
-              ya = ts * (UINT8)pgm_read_byte(&gfxFont->yAdvance);
+              ya = ts * (uint8_t)pgm_read_byte(&gfxFont->yAdvance);
 
     while(1) {
 			if(str) {
@@ -845,9 +846,9 @@ void Adafruit_GFX_Button(void) {
 	_gfx = 0;
 	}
 
-void initButton(ADAFRUIT_GFX gfx, UGRAPH_COORD_T x, UGRAPH_COORD_T y, UINT8 w, UINT8 h,
+void initButton(ADAFRUIT_GFX gfx, UGRAPH_COORD_T x, UGRAPH_COORD_T y, uint8_t w, uint8_t h,
   UINT16 outline, UINT16 fill, UINT16 textcolor,
-  char *label, UINT8 textsize) {
+  char *label, uint8_t textsize) {
 
   _x            = x;
   _y            = y;

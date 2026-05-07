@@ -32,9 +32,11 @@
 //#include "SPI.h"
 
 
+enum tftBusWidth { tft8bitbus, tft16bitbus }; ///< For first arg to parallel constructor
+
 WORD invertOnCommand,invertOffCommand;
 WORD _xstart,_ystart;
-DWORD _freq;
+uint32_t _freq;
 
 
 uint8_t _colstart = 0, ///< Some displays need this changed to offset

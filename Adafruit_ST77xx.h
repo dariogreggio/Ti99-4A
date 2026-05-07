@@ -39,7 +39,6 @@ typedef unsigned char prog_uchar;
 
 
 typedef struct HardwareSPI SPIClass; ///< SPI is a bit odd on WICED
-enum tftBusWidth { tft8bitbus, tft16bitbus }; ///< For first arg to parallel constructor
 
 #define SPI_DEFAULT_FREQ 16000000L  ///< Default SPI data clock frequency
 
@@ -53,7 +52,7 @@ enum tftBusWidth { tft8bitbus, tft16bitbus }; ///< For first arg to parallel con
 #include <stdint.h>
 
 //#include "typedefs.h"
-#include "TMS9900_PIC.h"
+#include "tms9900_PIC.h"
 
 //#include "Print.h"
 //#include <libpic30.h>
@@ -148,9 +147,9 @@ void Adafruit_SPITFT_2(uint16_t w, uint16_t h, int8_t cs, int8_t dc, int8_t rst)
     
 extern WORD invertOnCommand,invertOffCommand;
 extern WORD _xstart,_ystart;
-extern UINT8 rotation;
-extern DWORD _freq;
-extern UINT8 _initError;
+extern uint8_t rotation;
+extern uint32_t _freq;
+extern uint8_t _initError;
 
 
 
@@ -167,6 +166,7 @@ void __attribute__((always_inline)) SPI_BEGIN_TRANSACTION(void);
 void __attribute__((always_inline)) SPI_END_TRANSACTION(void);
 void __attribute__((always_inline)) startWrite(void);
 void __attribute__((always_inline)) endWrite(void);
+#ifdef ST7735
 #define START_WRITE() SPI_CS_LOW()
 #define END_WRITE() SPI_CS_HIGH()
 
@@ -175,16 +175,17 @@ void __attribute__((always_inline)) endWrite(void);
 #define SPI_DC_LOW() m_LCDDCBit=0
 #define SPI_DC_HIGH() m_LCDDCBit=1
 #define SPI_CS_HIGH() m_SPICSBit=1
+#endif
   
 
 
-#define MAKEWORD(a, b)   ((WORD) (((BYTE) (a)) | ((WORD) ((BYTE) (b))) << 8)) 
-#define MAKELONG(a, b)   ((unsigned long) (((WORD) (a)) | ((DWORD) ((WORD) (b))) << 16)) 
-#define HIBYTE(w)   ((BYTE) ((((WORD) (w)) >> 8) /* & 0xFF*/)) 
-//#define HIBYTE(w)   ((BYTE) (*((char *)&w+1)))		// molto meglio :)
-#define HIWORD(l)   ((WORD) (((DWORD) (l) >> 16) & 0xFFFF)) 
-#define LOBYTE(w)   ((BYTE) (w)) 
-#define LOWORD(l)   ((WORD) (l)) 
+#define MAKEWORD(a, b)   ((uint16_t) (((uint8_t) (a)) | ((uint16_t) ((uint8_t) (b))) << 8)) 
+#define MAKELONG(a, b)   ((unsigned long) (((uint16_t) (a)) | ((uint32_t) ((uint16_t) (b))) << 16)) 
+#define HIBYTE(w)   ((uint8_t) ((((uint16_t) (w)) >> 8) /* & 0xFF*/)) 
+//#define HIBYTE(w)   ((uint8_t) (*((char *)&w+1)))		// molto meglio :)
+#define HIWORD(l)   ((uint16_t) (((uint32_t) (l) >> 16) & 0xFFFF)) 
+#define LOBYTE(w)   ((uint8_t) (w)) 
+#define LOWORD(l)   ((uint16_t) (l)) 
 
 
 #endif // _ADAFRUIT_ST77XXH_

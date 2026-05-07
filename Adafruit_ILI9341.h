@@ -38,6 +38,7 @@
 
 #include <xc.h>
 #include <stdint.h>
+#include "TMS9900_PIC.h"
 
 //#include "Adafruit_GFX.h"
 //#include "Arduino.h"
@@ -46,13 +47,13 @@
 //#include <Adafruit_SPITFT_Macros.h>
 //#include <SPI.h>
 
-#define MAKEWORD(a, b)   ((WORD) (((BYTE) (a)) | ((WORD) ((BYTE) (b))) << 8)) 
-#define MAKELONG(a, b)   ((unsigned long) (((WORD) (a)) | ((DWORD) ((WORD) (b))) << 16)) 
-#define HIBYTE(w)   ((BYTE) ((((WORD) (w)) >> 8) /* & 0xFF*/)) 
-//#define HIBYTE(w)   ((BYTE) (*((char *)&w+1)))		// molto meglio :)
-#define HIWORD(l)   ((WORD) (((DWORD) (l) >> 16) & 0xFFFF)) 
-#define LOBYTE(w)   ((BYTE) (w)) 
-#define LOWORD(l)   ((WORD) (l)) 
+#define MAKEWORD(a, b)   ((uint16_t) (((uint8_t) (a)) | ((uint16_t) ((uint8_t) (b))) << 8)) 
+#define MAKELONG(a, b)   ((unsigned long) (((uint16_t) (a)) | ((uint32_t) ((uint16_t) (b))) << 16)) 
+#define HIBYTE(w)   ((uint8_t) ((((uint16_t) (w)) >> 8) /* & 0xFF*/)) 
+//#define HIBYTE(w)   ((uint8_t) (*((char *)&w+1)))		// molto meglio :)
+#define HIWORD(l)   ((uint16_t) (((uint32_t) (l) >> 16) & 0xFFFF)) 
+#define LOBYTE(w)   ((uint8_t) (w)) 
+#define LOWORD(l)   ((uint16_t) (l)) 
 
 
 #define PROGMEM
@@ -202,13 +203,17 @@ enum tftBusWidth { tft8bitbus, tft16bitbus }; ///< For first arg to parallel con
 //#define SPI_DC_HIGH() { m_LCDDCBit=1; }
 //#define SPI_CS_LOW() { m_LCDCSBit=0; }
 //#define SPI_CS_HIGH() { m_LCDCSBit=1; }
-#define TFT_WR_STROBE() {  m_LCDSTRBit=0; ClrWdt(); m_LCDSTRBit=1; } // Parallel interface write strobe; arduino fa circa 250nS
+#define SPI_DC_LOW() { m_LCDDCBit=0; }
+#define SPI_DC_HIGH() { m_LCDDCBit=1; }
+#define SPI_CS_LOW() { m_LCDCSBit=0; }
+#define SPI_CS_HIGH() { m_LCDCSBit=1; }
+#define TFT_WR_STROBE() {  m_LCDSTRBit=0; m_LCDSTRBit=1; } // Parallel interface write strobe; arduino fa circa 250nS
 // ~90nS impulso, ~1.2uS la write totale
 #define TFT_RD_LOW() { m_LCDRDBit=0; }
 #define TFT_RD_HIGH() { m_LCDRDBit=1; }
 
-#define START_WRITE() //SPI_CS_LOW()
-#define END_WRITE() //SPI_CS_HIGH()
+#define START_WRITE() SPI_CS_LOW()
+#define END_WRITE() SPI_CS_HIGH()
 
 /**************************************************************************/
 /*!
@@ -226,7 +231,7 @@ work with ILI9340)
   int Adafruit_ILI9341_8(enum tftBusWidth busWidth, int8_t d0, int8_t wr, int8_t dc,
                    int8_t cs, int8_t rst, int8_t rd);
 
-    extern UINT8 rotation;
+    extern uint8_t rotation;
   void begin(uint32_t freq);
   void setRotation(uint8_t);
   void invertDisplay(BOOL);
@@ -240,21 +245,21 @@ work with ILI9340)
   void sendCommand(uint8_t commandByte, uint8_t *dataBytes, uint8_t numDataBytes);
 
 
-void fillScreen(UINT16 color);
+void fillScreen(GFX_COLOR color);
 #define clearScreen() fillScreen(BLACK)		//same as fillScreen DEMENTI
-void drawPixel(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UINT16 color);
-void drawFastVLine(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T h, UINT16 color);
-void drawFastHLine(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UINT16 color);
-void drawLine(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0,UGRAPH_COORD_T x1, UGRAPH_COORD_T y1, UINT16 color);
-void drawRect(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color);
-void fillRect(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UGRAPH_COORD_T h,UINT16 color);
+void drawPixel(UGRAPH_COORD_T x, UGRAPH_COORD_T y, GFX_COLOR color);
+void drawFastVLine(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T h, GFX_COLOR color);
+void drawFastHLine(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, GFX_COLOR color);
+void drawLine(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0,UGRAPH_COORD_T x1, UGRAPH_COORD_T y1, GFX_COLOR color);
+void drawRect(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UGRAPH_COORD_T h, GFX_COLOR color);
+void fillRect(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UGRAPH_COORD_T h,GFX_COLOR color);
     
-void __attribute__((always_inline)) HLine(UGRAPH_COORD_T , UGRAPH_COORD_T , UGRAPH_COORD_T , UINT16 );
-void __attribute__((always_inline)) VLine(UGRAPH_COORD_T , UGRAPH_COORD_T , UGRAPH_COORD_T , UINT16 );
-void __attribute__((always_inline)) Pixel(UGRAPH_COORD_T , UGRAPH_COORD_T , UINT16 );
+void __attribute__((always_inline)) HLine(UGRAPH_COORD_T , UGRAPH_COORD_T , UGRAPH_COORD_T , GFX_COLOR );
+void __attribute__((always_inline)) VLine(UGRAPH_COORD_T , UGRAPH_COORD_T , UGRAPH_COORD_T , GFX_COLOR );
+void __attribute__((always_inline)) Pixel(UGRAPH_COORD_T , UGRAPH_COORD_T , GFX_COLOR );
 
 void writedata16(uint16_t);
-void writeColor(UINT16 color, uint32_t len);
+void writeColor(GFX_COLOR color, uint32_t len);
     
 BOOL boundaryCheck(UGRAPH_COORD_T x,UGRAPH_COORD_T y);
 void _swap(UGRAPH_COORD_T *, UGRAPH_COORD_T *);

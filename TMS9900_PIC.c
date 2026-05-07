@@ -1,3 +1,7 @@
+// c'è un curioso difettino, dopo alcuni minuti lo schermo si cimisce e escono tipo solo la prima riga ogni 8...
+//  ma NON se il programma TI-BASIC gira! boh
+
+
 // Local Header Files
 #include <stdlib.h>
 #include <string.h>
@@ -7,9 +11,15 @@
 #include <sys/attribs.h>
 #include <sys/kmem.h>
 
+#ifdef ST7735
 #include "Adafruit_ST77xx.h"
 #include "Adafruit_ST7735.h"
 #include "adafruit_gfx.h"
+#endif
+#ifdef ILI9341
+#include "Adafruit_ILI9341.h"
+#include "adafruit_gfx.h"
+#endif
 
 
 
@@ -56,7 +66,12 @@
 // DEVCFG0
 #pragma config DEBUG = OFF              // Background Debugger Enable (Debugger is disabled)
 #pragma config JTAGEN = OFF             // JTAG Enable (JTAG Disabled)
+#ifdef ILI9341      // pcb arduino forgetIvrea32
+#pragma config ICESEL = ICS_PGx2        // ICE/ICD Comm Channel Select (Communicate on PGEC2/PGED2)
+#else   // pcb radio 2019
 #pragma config ICESEL = ICS_PGx1        // ICE/ICD Comm Channel Select (Communicate on PGEC1/PGED1)
+// 1 su schedina PIC32 primissima, 2 su succ.
+#endif
 #pragma config TRCEN = OFF              // Trace Enable (Trace features in the CPU are disabled)
 #pragma config BOOTISA = MIPS32         // Boot ISA Selection (Boot code and Exception code is MIPS32)
 #pragma config FECCCON = OFF_UNLOCKED   // Dynamic Flash ECC Configuration (ECC and Dynamic ECC are disabled (ECCCON bits are writable))
@@ -89,22 +104,25 @@
 
 
 const char CopyrightString[]= {'T','M','S','9','9','0','0',' ','E','m','u','l','a','t','o','r',' ','v',
-	VERNUMH+'0','.',VERNUML/10+'0',(VERNUML % 10)+'0',' ','-',' ', '0','7','/','0','7','/','2','4', 0 };
+	VERNUMH+'0','.',VERNUML/10+'0',(VERNUML % 10)+'0',' ','-',' ', '0','7','/','0','5','/','2','6', 0 };
 
-const char Copyr1[]="(C) Dario's Automation 2022-2024 - G.Dar\xd\xa\x0";
+const char Copyr1[]="(C) Dario's Automation 2022-2026 - G.Dar\xd\xa\x0";
 
 
 
 // Global Variables:
-BOOL fExit,debug;
-extern BYTE DoIRQ,DoLoad,DoIdle,DoReset,ColdReset;
+extern BOOL fExit,debug;
 extern BYTE ram_seg[];
 extern BYTE rom_seg[],rom_seg2[],grom_seg[];
+extern SWORD VICRaster;
 extern BYTE TMS9918Reg[8],TMS9918RegS,TMS9918Sel,TMS9918WriteStage;
 extern BYTE TMS9919[1]; 
+extern WORD TMS9901Timer,TMS9901Cnt;
 extern BYTE TMS9901[32];
-extern BYTE VideoRAM[VIDEORAM_SIZE];
+extern BYTE TMSVideoRAM[TMSVIDEORAM_SIZE];
 extern volatile BYTE TIMIRQ,VIDIRQ;
+extern BOOL ColdReset;
+extern BYTE CPUPins;
 extern BYTE Keyboard[8];
 volatile PIC32_RTCC_DATE currentDate={1,1,0};
 volatile PIC32_RTCC_TIME currentTime={0,0,0};
@@ -112,11 +130,8 @@ const BYTE dayOfMonth[12]={31,28,31,30,31,30,31,31,30,31,30,31};
 
 
 
-
 //https://www.angelfire.com/art2/unicorndreams/msx/RR-VDP.html#VDP-StatusReg
-//#define REAL_SIZE 1
-#define HORIZ_SIZE 256
-#define VERT_SIZE 192
+//#define DO_STRETCH 1
 const WORD graphColors[16]={BLACK/*transparent*/,BLACK,LIGHTGREEN,BRIGHTGREEN, BLUE,BRIGHTBLUE,RED,BRIGHTCYAN,
   LIGHTRED,BRIGHTRED,YELLOW,LIGHTYELLOW, GREEN,MAGENTA,LIGHTGRAY,WHITE
 	};
@@ -124,6 +139,7 @@ int UpdateScreen(SWORD rowIni, SWORD rowFin) {
 	register int i;
 	UINT16 px,py;
 	int row1;
+	int x;
 	register BYTE *p1,*p2;
   BYTE ch1,ch2,color,color1,color0;
 
@@ -136,150 +152,271 @@ int UpdateScreen(SWORD rowIni, SWORD rowFin) {
   WORD videoAddress=((WORD)(TMS9918Reg[2] & 0xf)) << 10;
   WORD colorAddress=((WORD)(TMS9918Reg[3])) << 6;
   WORD spriteAttrAddress=((WORD)(TMS9918Reg[5] & 0x7f)) << 7;
-  WORD spritePatternAddress=((WORD)(TMS9918Reg[5] & 0x7)) << 11;
-  
+  WORD spritePatternAddress=((WORD)(TMS9918Reg[6] & 0x7)) << 11;
+#ifdef DO_STRETCH
+#define HORIZ_OFFSCREEN (320-((HORIZ_SIZE*9)/8))/2
+#define VERT_OFFSCREEN (240-((VERT_SIZE*9)/8))/2
+  BOOL lines9;
+#else
+#define HORIZ_OFFSCREEN (320-HORIZ_SIZE)/2
+#define VERT_OFFSCREEN (240-VERT_SIZE)/2
+#endif
+
   START_WRITE();
   
-  if(!(TMS9918Reg[1] & 0b01000000)) {    // blanked
-#ifdef REAL_SIZE
-    setAddrWindow(0,rowIni,_width,_height /*rowFin-rowIni*/);
-    for(py=0; py<_height; py++)    // bordo/sfondo
-      for(px=0; px<_width; px++)
-        writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+  if(!rowIni) {   // 
+    setAddrWindow(0,0,_width,VERT_OFFSCREEN);
+    for(py=0; py<VERT_OFFSCREEN; py++) {
+#ifdef DO_STRETCH
+      for(px=0; px<((HORIZ_SIZE*9)/8+HORIZ_OFFSCREEN*2); px++)
 #else
-    setAddrWindow(0,rowIni/2,_width,_height /*(rowFin-rowIni)/2*/);
-    for(py=0; py<_height; py++)    // bordo/sfondo
-      for(px=0; px<_width; px++)
-        writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+      for(px=0; px<(HORIZ_SIZE+HORIZ_OFFSCREEN*2); px++)
 #endif
+        writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+      }
     }
-  else if(rowIni>=0 && rowIni<=192) {
+  
+  if(rowIni>=VERT_OFFSCREEN && rowIni<=MAX_RASTER-VERT_OFFSCREEN) {
     
 //  LED3 = 1;
   
-#ifdef REAL_SIZE
-  setAddrWindow(0,rowIni,_width,rowFin-rowIni);
-  switch(videoMode) {    
-    case 0:     // graphics 1
-      for(py=rowIni/8; py<rowFin/2/8; py++) {    // 192 
-        p2=((BYTE*)&VideoRAM[videoAddress]) + (py*32 /*HORIZ_SIZE/8*/);
-        for(row1=0; row1<8; row1++) {    // 192 linee(32 righe char) 
-          p1=p2;
-					for(px=0; px<20 /*32*/ /*HORIZ_SIZE/8*/; px++) {    // 256 pixel 
-						ch1=*p1++;
-						ch2=VideoRAM[charAddress + (ch1*8) + (row1)];
-						color=VideoRAM[colorAddress+ch1/8];
-						color1=color >> 4; color0=color & 0xf;
+#ifdef DO_STRETCH
+    setAddrWindow(0,(rowIni/8)*9,_width,9);
+#else
+    setAddrWindow(0,rowIni,_width,8 /*_height-VERT_OFFSCREEN*2*/);
+#endif
 
-						writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
-										graphColors[ch2 & 0b01000000 ? color1 : color0]);
-						writedata16x2(graphColors[ch2 & 0b00100000 ? color1 : color0],
-										graphColors[ch2 & 0b00010000 ? color1 : color0]);
-						writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
-										graphColors[ch2 & 0b00000100 ? color1 : color0]);
-						writedata16x2(graphColors[ch2 & 0b00000010 ? color1 : color0],
-										graphColors[ch2 & 0b00000001 ? color1 : color0]);
-	          }
-          }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-      break;
-    case 1:     // graphics 2
-      for(py=rowIni; py<rowFin/3; py++) {    // 192 linee 
-        p1=((BYTE*)&VideoRAM[videoAddress]) + (py*32 /*HORIZ_SIZE/8*/);
-        for(px=0; px<32 /*HORIZ_SIZE/8*/; px++) {    // 256 pixel 
-          ch1=*p1++;
-          ch2=VideoRAM[charAddress + (ch1*8) + (py & 7)];
-          color=VideoRAM[colorAddress+py];
-          color1=color >> 4; color0=color & 0xf;
+//    rowIni-=VERT_OFFSCREEN;no!!
 
-          writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
-                  graphColors[ch2 & 0b01000000 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00100000 ? color1 : color0],
-                  graphColors[ch2 & 0b00010000 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
-                  graphColors[ch2 & 0b00000100 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00000010 ? color1 : color0],
-                  graphColors[ch2 & 0b00000001 ? color1 : color0]);
-          }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-      for(py=rowFin/3; py<(rowFin*2)/3; py++) {    //
-        p1=((BYTE*)&VideoRAM[videoAddress]) + (py*32 /*HORIZ_SIZE/8*/);
-        for(px=0; px<32 /*HORIZ_SIZE/8*/; px++) {    // 256 pixel 
-          ch1=*p1++;
-          ch2=VideoRAM[charAddress +2048 + (ch1*8) + (py & 7)];
-          color=VideoRAM[colorAddress+2048+py];
-          color1=color >> 4; color0=color & 0xf;
+    if(!(TMS9918Reg[1] & 0b01000000)) {    // blanked
+      for(py=0; py<8; py++)    // bordo/sfondo
+        for(px=0; px<HORIZ_SIZE; px++)
+          writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+      }
+    else switch(videoMode) {    
+      case 0:     // graphics 1
+        for(py=rowIni/8; py<rowFin/8; py++) {    // 192 
+					p2=((BYTE*)&TMSVideoRAM[videoAddress]) + ((py-VERT_OFFSCREEN/8)*HORIZ_SIZE/8);
+#ifdef DO_STRETCH
+          lines9=0;
+#endif
+          for(row1=0; row1<8; row1++) {    // 192 linee(32 righe char) 
+						for(px=0; px<HORIZ_OFFSCREEN; px++)
+              writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+            p1=p2;
+						for(px=0; px<HORIZ_SIZE/8; px++) {    // 256 pixel 
+              ch1=*p1++;
+              ch2=TMSVideoRAM[charAddress + (ch1*8) + (row1)];
+              color=TMSVideoRAM[colorAddress+ch1/8];
+              color1=color >> 4; color0=color & 0xf;
+							if(!color0)
+								color0=TMS9918Reg[7] & 0xf;
+							if(!color1)
+								color1=TMS9918Reg[7] & 0xf;
 
-          writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
-                  graphColors[ch2 & 0b01000000 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00100000 ? color1 : color0],
-                  graphColors[ch2 & 0b00010000 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
-                  graphColors[ch2 & 0b00000100 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00000010 ? color1 : color0],
-                  graphColors[ch2 & 0b00000001 ? color1 : color0]);
+              writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
+                      graphColors[ch2 & 0b01000000 ? color1 : color0]);
+              writedata16x2(graphColors[ch2 & 0b00100000 ? color1 : color0],
+                      graphColors[ch2 & 0b00010000 ? color1 : color0]);
+              writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
+                      graphColors[ch2 & 0b00000100 ? color1 : color0]);
+              writedata16x2(graphColors[ch2 & 0b00000010 ? color1 : color0],
+                      graphColors[ch2 & 0b00000001 ? color1 : color0]);
+#ifdef DO_STRETCH
+              writedata16(graphColors[ch2 & 0b00000001 ? color1 : color0]);   // da 256 a 288
+#endif
+              }
+						for(px=0; px<HORIZ_OFFSCREEN; px++)
+              writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+#ifdef DO_STRETCH
+            if(!lines9) {
+              row1--;   // da 192 a 216
+              lines9=1;
+              }
+#endif
+            }
+          ClrWdt();
           }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-      for(py=(rowFin*2)/3; py<rowFin; py++) {    // 
-        p1=((BYTE*)&VideoRAM[videoAddress]) + (py*32 /*HORIZ_SIZE/8*/);
-        for(px=0; px<32 /*HORIZ_SIZE/8*/; px++) {    // 256 pixel 
-          ch1=*p1++;
-          ch2=VideoRAM[charAddress +4096 + (ch1*8) + (py & 7)];
-          color=VideoRAM[colorAddress+4096+py];
-          color1=color >> 4; color0=color & 0xf;
-
-          writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
-                  graphColors[ch2 & 0b01000000 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00100000 ? color1 : color0],
-                  graphColors[ch2 & 0b00010000 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
-                  graphColors[ch2 & 0b00000100 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00000010 ? color1 : color0],
-                  graphColors[ch2 & 0b00000001 ? color1 : color0]);
-          }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-      break;
-    case 2:     // multicolor
-      for(py=rowIni; py<rowFin; py+=4) {    // 48 linee diventano 96
-        p1=((BYTE*)&VideoRAM[videoAddress]) + (py*16);
-        ch1=*p1++;
-        p2=((BYTE*)&VideoRAM[charAddress+ch1]);
-        for(px=0; px<HORIZ_SIZE; px+=2) {    // 64 pixel diventano 128
-          ch2=*p2++;
-          color=VideoRAM[colorAddress+ch2];
-          color1=color >> 4; color0=color & 0xf;
           
-          // finire!!
+  handle_sprites:
+        { // (OVVIAMENTE sarebbe meglio gestirli riga per riga...!
+				struct SPRITE_ATTR *sa;
+				BYTE ssize=TMS9918Reg[1] & 2 ? 32 : 8,smag=TMS9918Reg[1] & 1 ? 16 : 8;
+				BYTE j2;
+				int8_t j,smax;
+				uint16_t sofs;
 
-          writedata16x2(graphColors[color1],graphColors[color0]);
+				for(smax=0; smax<32; smax++) {			// screen order inverso per cui mi serve sapere da dove iniziare
+					sa=((struct SPRITE_ATTR *)&TMSVideoRAM[spriteAttrAddress+smax*sizeof(struct SPRITE_ATTR)]);
+					if(sa->ypos>=LAST_SPRITE_YPOS)
+						break;
+					}
+				smax--;
+
+				for(i=smax; i>=0; i--) {			// screen order inverso!
+					struct SPRITE_ATTR *sa2;
+        
+					sa=((struct SPRITE_ATTR *)&TMSVideoRAM[spriteAttrAddress+i*sizeof(struct SPRITE_ATTR)]);
+					j2=smag*(ssize==32 ? 2 : 1);
+					for(j=smax-1; j>=0; j--) {
+						sa2=((struct SPRITE_ATTR *)&TMSVideoRAM[spriteAttrAddress+j*sizeof(struct SPRITE_ATTR)]);
+						if((sa2->ypos>=sa->ypos && sa2->ypos<=sa->ypos+j2) &&
+							(sa2->xpos>=sa->xpos && sa2->xpos<=sa->xpos+j2)) {
+							// controllare solo i pixel accesi, a 1!
+							TMS9918RegS |= 0b00100000;
+							// poi ci sarebbe il flag 5 sprite per riga!
+							}
+						sa2++;
+						}
+        
+					if(ssize==8)
+						p1=((BYTE*)&TMSVideoRAM[spritePatternAddress]) + (((WORD)sa->name)*8); // (((WORD)sa->name)*ssize);
+					else
+						p1=((BYTE*)&TMSVideoRAM[spritePatternAddress]) + ((((WORD)sa->name) & 0xfc)*8);
+					j=ssize;
+					if(sa->ypos > 0xe1)     // Y diventa negativo..
+						;
+					color1=sa->color; color0=TMS9918Reg[7] & 0xf;
+
+					
+						if(sa->name==0x88 && sa->ypos>rowIni && sa->ypos<rowFin)			// debug
+							x=1;
+
+					if(sa->color==0)
+						goto skippa_sprite;
+
+					x=sa->eclock ? -32 : 0;     // X diventa negativo..
+					x+=sa->xpos;
+					sofs=0;
+					for(py=0; py<ssize; py++,j--) {
+						BYTE oldpixel;
+						int y;
+
+						if(ssize>8)
+							y=(py & 15)+sa->ypos;
+						else
+							y=py+sa->ypos;
+//						if(y+VERT_OFFSCREEN<rowIni || y+VERT_OFFSCREEN>rowFin)		non va così.. sistemare per velocizzare!
+//							continue;
+  	        setAddrWindow(x,y,smag,smag);   // ANCHE 32!! fare
+						ch1=*p1++;
+
+						if(x & 1)// FORSE bisognerebbe gestire posizione dispari...
+							;
+						if(smag==16) {
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b10000000)
+								oldpixel = (color1) | (color1 << 4);
+	            writedata16(oldpixel); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b01000000)
+								oldpixel = (color1) | (color1 << 4);
+	            writedata16(oldpixel); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b00100000)
+								oldpixel = (color1) | (color1 << 4);
+	            writedata16(oldpixel); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b00010000)
+								oldpixel = (color1) | (color1 << 4);
+	            writedata16(oldpixel); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b00001000)
+								oldpixel = (color1) | (color1 << 4);
+	            writedata16(oldpixel); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b00000100)
+								oldpixel = (color1) | (color1 << 4);
+	            writedata16(oldpixel); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b00000010)
+								oldpixel = (color1) | (color1 << 4);
+	            writedata16(oldpixel); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b00000001)
+								oldpixel = (color1) | (color1 << 4);
+	            writedata16(oldpixel); 
+							}
+						else {
+	            writedata16(graphColors[ch2 & 0b10000000 ? color1 : color0]); 
+							writedata16(graphColors[ch2 & 0b1000000 ? color1 : color0]); 
+							writedata16(graphColors[ch2 & 0b100000 ? color1 : color0]); 
+							writedata16(graphColors[ch2 & 0b10000 ? color1 : color0]); 
+							writedata16(graphColors[ch2 & 0b1000 ? color1 : color0]); 
+							writedata16(graphColors[ch2 & 0b100 ? color1 : color0]); 
+							writedata16(graphColors[ch2 & 0b10 ? color1 : color0]); 
+							writedata16(graphColors[ch2 & 0b1 ? color1 : color0]); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b10000000)
+								oldpixel = (oldpixel & 0x0f) | (color1 << 4);
+							if(ch1 & 0b01000000)
+								oldpixel = (oldpixel & 0xf0) | (color1);
+	            writedata16(oldpixel); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b00100000)
+								oldpixel = (oldpixel & 0x0f) | (color1 << 4);
+							if(ch1 & 0b00010000)
+								oldpixel = (oldpixel & 0xf0) | (color1);
+	            writedata16(oldpixel); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b00001000)
+								oldpixel = (oldpixel & 0x0f) | (color1 << 4);
+							if(ch1 & 0b00000100)
+								oldpixel = (oldpixel & 0xf0) | (color1);
+	            writedata16(oldpixel); 
+							oldpixel=0 /**pTMSVideoRAM*/;    // LEGGERE esistente...
+							if(ch1 & 0b00000010)
+								oldpixel = (oldpixel & 0x0f) | (color1 << 4);
+							if(ch1 & 0b00000001)
+								oldpixel = (oldpixel & 0xf0) | (color1);
+	            writedata16(oldpixel); 
+							}
+
+						switch(j) {   // gestisco i "quadranti" sprite messi a cazzo...
+							case 23:
+	//              setAddrWindow(sa->xpos/2,sa->ypos/2+8/2,8/2,8/2);
+								sofs=0;
+								break;
+							case 15:
+//								p1=((BYTE*)&TMSVideoRAM[spritePatternAddress]) + ((WORD)sa->name*ssize) + (16*ssize)/2;
+	//              setAddrWindow(sa->xpos/2+8/2,sa->ypos/2,8/2,8/2);
+								sofs=0+smag/2;
+								if(x>239)		// migliorare bordo dx
+									goto skippa_sprite;
+								break;
+							case 7:
+	//              setAddrWindow(sa->xpos/2+8/2,sa->ypos/2+8/2,8/2,8/2);
+//								pTMSVideoRAM=(BYTE*)&TMSVideoRAM[0]+(py+sa->ypos+8)*(((HORIZ_SIZE/2)+(HORIZ_OFFSCREEN*2)))+sa->xpos+(8*ssize)/2;
+								sofs=0+smag/2;
+								break;
+							default:
+								break;
+							}
+						}
+
+skippa_sprite:
+						;
           }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
         }
-      break;
-    case 4:     // text 32x24, ~18mS, O0 opp O2, 2/7/24
-      color1=TMS9918Reg[7] >> 4; color0=TMS9918Reg[7] & 0xf;
-      for(py=rowIni/8; py<128/8 /*rowFin/8 /2*/ ; py++) {    // 192 linee(32 righe char) 
-        p2=((BYTE*)&VideoRAM[videoAddress]) + (py*40);
-        // mettere bordo
-        for(row1=0; row1<8; row1++) {    // 192 linee(32 righe char) 
-          p1=p2;
-          for(px=0; px<40 /2; px++) {    // 240 pixel 
+        break;
+        
+      case 1:     // graphics 2
+#ifdef DO_STRETCH
+        lines9=0;
+#endif
+        for(py=rowIni; py<rowFin/3; py++) {    // 192 linee 
+					p1=((BYTE*)&TMSVideoRAM[videoAddress]) + ((py-VERT_OFFSCREEN/8)*HORIZ_SIZE/8);
+  				for(px=0; px<HORIZ_OFFSCREEN; px++)
+            writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+					for(px=0; px<HORIZ_SIZE/8; px++) {    // 256 pixel 
             ch1=*p1++;
-            ch2=VideoRAM[charAddress + (ch1*8) + (row1)];
+            ch2=TMSVideoRAM[charAddress + (ch1*8) + (py & 7)];
+            color=TMSVideoRAM[colorAddress+py];
+            color1=color >> 4; color0=color & 0xf;
+						if(!color0)
+							color0=TMS9918Reg[7] & 0xf;
+						if(!color1)
+							color1=TMS9918Reg[7] & 0xf;
 
             writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
                     graphColors[ch2 & 0b01000000 ? color1 : color0]);
@@ -289,257 +426,204 @@ int UpdateScreen(SWORD rowIni, SWORD rowFin) {
                     graphColors[ch2 & 0b00000100 ? color1 : color0]);
             writedata16x2(graphColors[ch2 & 0b00000010 ? color1 : color0],
                     graphColors[ch2 & 0b00000001 ? color1 : color0]);
-
+#ifdef DO_STRETCH
+            writedata16(graphColors[ch2 & 0b00000001 ? color1 : color0]);   // da 256 a 288
+#endif
             }
+  				for(px=0; px<HORIZ_OFFSCREEN; px++)
+            writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+#ifdef DO_STRETCH
+          if(!lines9) {
+            py--;   // da 192 a 216
+            lines9=1;
+            }
+#endif
+          ClrWdt();
           }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-      break;
-    }
-#else
-  setAddrWindow(0,0/*rowIni/2*/,_width,_height/*(rowFin-rowIni)/2*/);
-  
-  for(py=(_height-(rowFin-rowIni)/2)/2; py; py--)    // bordo/sfondo
-    for(px=0; px<_width; px++)
-      writedata16(graphColors[TMS9918Reg[7] & 0xf]);
-  
-  switch(videoMode) {    
-    case 0:     // graphics 1
-      for(py=rowIni/8; py<rowFin/8; py++) {    // 192 linee diventa 96
-        p2=((BYTE*)&VideoRAM[videoAddress]) + (py*32 /*HORIZ_SIZE/8*/);
-        // mettere bordo?
-        for(row1=0; row1<8; row1+=2) {    // 192 linee diventa 96
-          p1=p2;
-          for(px=0; px<32 /*HORIZ_SIZE/8*/; px++) {    // 256 pixel diventano 128...
+#ifdef DO_STRETCH
+        lines9=0;
+#endif
+        for(py=rowFin/3; py<(rowFin*2)/3; py++) {    //
+					p1=((BYTE*)&TMSVideoRAM[videoAddress]) + ((py-VERT_OFFSCREEN/8)*HORIZ_SIZE/8);
+  				for(px=0; px<HORIZ_OFFSCREEN; px++)
+            writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+					for(px=0; px<HORIZ_SIZE/8; px++) {    // 256 pixel 
             ch1=*p1++;
-            ch2=VideoRAM[charAddress + (ch1*8) + (row1)];
-            color=VideoRAM[colorAddress+ch1/8];
+            ch2=TMSVideoRAM[charAddress +2048 + (ch1*8) + (py & 7)];
+            color=TMSVideoRAM[colorAddress+2048+py];
+            color1=color >> 4; color0=color & 0xf;
+						if(!color0)
+							color0=TMS9918Reg[7] & 0xf;
+						if(!color1)
+							color1=TMS9918Reg[7] & 0xf;
+
+            writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
+                    graphColors[ch2 & 0b01000000 ? color1 : color0]);
+            writedata16x2(graphColors[ch2 & 0b00100000 ? color1 : color0],
+                    graphColors[ch2 & 0b00010000 ? color1 : color0]);
+            writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
+                    graphColors[ch2 & 0b00000100 ? color1 : color0]);
+            writedata16x2(graphColors[ch2 & 0b00000010 ? color1 : color0],
+                    graphColors[ch2 & 0b00000001 ? color1 : color0]);
+#ifdef DO_STRETCH
+            writedata16(graphColors[ch2 & 0b00000001 ? color1 : color0]);   // da 256 a 288
+#endif
+            }
+  				for(px=0; px<HORIZ_OFFSCREEN; px++)
+            writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+#ifdef DO_STRETCH
+          if(!lines9) {
+            py--;   // da 192 a 216
+            lines9=1;
+            }
+#endif
+          ClrWdt();
+          }
+#ifdef DO_STRETCH
+        lines9=0;
+#endif
+        for(py=(rowFin*2)/3; py<rowFin; py++) {    // 
+					p1=((BYTE*)&TMSVideoRAM[videoAddress]) + ((py-VERT_OFFSCREEN/8)*HORIZ_SIZE/8);
+  				for(px=0; px<HORIZ_OFFSCREEN; px++)
+            writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+					for(px=0; px<HORIZ_SIZE/8; px++) {    // 256 pixel 
+            ch1=*p1++;
+            ch2=TMSVideoRAM[charAddress +4096 + (ch1*8) + (py & 7)];
+            color=TMSVideoRAM[colorAddress+4096+py];
+            color1=color >> 4; color0=color & 0xf;
+						if(!color0)
+							color0=TMS9918Reg[7] & 0xf;
+						if(!color1)
+							color1=TMS9918Reg[7] & 0xf;
+
+            writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
+                    graphColors[ch2 & 0b01000000 ? color1 : color0]);
+            writedata16x2(graphColors[ch2 & 0b00100000 ? color1 : color0],
+                    graphColors[ch2 & 0b00010000 ? color1 : color0]);
+            writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
+                    graphColors[ch2 & 0b00000100 ? color1 : color0]);
+            writedata16x2(graphColors[ch2 & 0b00000010 ? color1 : color0],
+                    graphColors[ch2 & 0b00000001 ? color1 : color0]);
+#ifdef DO_STRETCH
+            writedata16(graphColors[ch2 & 0b00000001 ? color1 : color0]);   // da 256 a 288
+#endif
+            }
+  				for(px=0; px<HORIZ_OFFSCREEN; px++)
+            writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+#ifdef DO_STRETCH
+          if(!lines9) {
+            py--;   // da 192 a 216
+            lines9=1;
+            }
+#endif
+          ClrWdt();
+          }
+        goto handle_sprites;
+        break;
+        
+      case 2:     // multicolor
+#ifdef DO_STRETCH
+        lines9=0;
+#endif
+        for(py=rowIni; py<rowFin; py+=4) {    // 48 linee diventano 96
+  				for(px=0; px<HORIZ_OFFSCREEN; px++)
+            writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+          p1=((BYTE*)&TMSVideoRAM[videoAddress]) + (py*16);
+          ch1=*p1++;
+          p2=((BYTE*)&TMSVideoRAM[charAddress+ch1]);
+          for(px=0; px<HORIZ_SIZE; px+=2) {    // 64 pixel diventano 128
+            ch2=*p2++;
+            color=TMSVideoRAM[colorAddress+ch2];
             color1=color >> 4; color0=color & 0xf;
 
-            writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
-                    graphColors[ch2 & 0b00100000 ? color1 : color0]);
-            writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
-                    graphColors[ch2 & 0b00000010 ? color1 : color0]);
-            writedata16(graphColors[ch2 & 0b00000001 ? color1 : color0]); // 128->160
-            }
-          }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-handle_sprites:
-      { // OVVIAMENTE sarebbe meglio gestirli riga per riga...!
-      struct SPRITE_ATTR *sa;
-      BYTE ssize=TMS9918Reg[1] & 2 ? 32 : 8,smag=TMS9918Reg[1] & 1 ? 16 : 8;
-      BYTE j;
-      
-      sa=((struct SPRITE_ATTR *)&VideoRAM[spriteAttrAddress]);
-      for(i=0; i<32; i++) {
-        struct SPRITE_ATTR *sa2;
-        
-        if(sa->ypos>=LAST_SPRITE_YPOS)
-          continue;
-        
-        j=smag*(ssize==32 ? 2 : 1);
-        sa2=sa+1;
-        for(j=i+1; j<32; j++) {
-          if(sa2->ypos < LAST_SPRITE_YPOS) {
-            
-            if((sa2->ypos>=sa->ypos && sa2->ypos<=sa->ypos+j) &&
-              (sa2->xpos>=sa->xpos && sa2->xpos<=sa->xpos+j)) {
-              // controllare solo i pixel accesi, a 1!
-              TMS9918RegS |= 0b00100000;
-              }
-            // poi ci sarebbe il flag 5 sprite per riga!
-            }
-          sa2++;
-          }
-        
-        p1=((BYTE*)&VideoRAM[spritePatternAddress]) + ((WORD)sa->name*ssize);
-        j=ssize;
-        if(sa->ypos > 0xe1)     // Y diventa negativo..
-          ;
-        if(sa->eclock)     // X diventa negativo..
-          ;
-        setAddrWindow(sa->xpos/2,sa->ypos/2,8/2,8/2);
-        color1=sa->color; color0=TMS9918Reg[7] & 0xf;
-        
-        for(py=0; py<ssize; py++) {
-          ch1=*p1++;
-          if(smag==16) {
-            writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],graphColors[ch2 & 0b10000000 ? color1 : color0]);
-            writedata16x2(graphColors[ch2 & 0b1000000 ? color1 : color0],graphColors[ch2 & 0b1000000 ? color1 : color0]);
-            writedata16x2(graphColors[ch2 & 0b100000 ? color1 : color0],graphColors[ch2 & 0b100000 ? color1 : color0]);
-            writedata16x2(graphColors[ch2 & 0b10000 ? color1 : color0],graphColors[ch2 & 0b10000 ? color1 : color0]);
-            writedata16x2(graphColors[ch2 & 0b1000 ? color1 : color0],graphColors[ch2 & 0b1000 ? color1 : color0]);
-            writedata16x2(graphColors[ch2 & 0b100 ? color1 : color0],graphColors[ch2 & 0b100 ? color1 : color0]);
-            writedata16x2(graphColors[ch2 & 0b10 ? color1 : color0],graphColors[ch2 & 0b10 ? color1 : color0]);
-            writedata16x2(graphColors[ch2 & 0b1 ? color1 : color0],graphColors[ch2 & 0b1 ? color1 : color0]);
-            }
-          else {
-            writedata16(graphColors[ch2 & 0b10000000 ? color1 : color0]); 
-            writedata16(graphColors[ch2 & 0b1000000 ? color1 : color0]); 
-            writedata16(graphColors[ch2 & 0b100000 ? color1 : color0]); 
-            writedata16(graphColors[ch2 & 0b10000 ? color1 : color0]); 
-            writedata16(graphColors[ch2 & 0b1000 ? color1 : color0]); 
-            writedata16(graphColors[ch2 & 0b100 ? color1 : color0]); 
-            writedata16(graphColors[ch2 & 0b10 ? color1 : color0]); 
-            writedata16(graphColors[ch2 & 0b1 ? color1 : color0]); 
-            }
-          j--;
-          switch(j) {   // gestisco i "quadranti" sprite messi a cazzo...
-            case 23:
-              setAddrWindow(sa->xpos/2,sa->ypos/2+8/2,8/2,8/2);
-              break;
-            case 15:
-              p1=((BYTE*)&VideoRAM[spritePatternAddress]) + ((WORD)sa->name*ssize) + 16;
-              setAddrWindow(sa->xpos/2+8/2,sa->ypos/2,8/2,8/2);
-              break;
-            case 7:
-              setAddrWindow(sa->xpos/2+8/2,sa->ypos/2+8/2,8/2,8/2);
-              break;
-            default:
-              break;
-            }
-          }
-          
-        sa++;
-        }
-      }
-      break;
-    case 1:     // graphics 2
-      for(py=rowIni; py<rowFin/3; py+=2) {    // 192 linee diventa 96
-        p1=((BYTE*)&VideoRAM[videoAddress]) + (py*32 /*HORIZ_SIZE/8*/);
-        // mettere bordo?
-        for(px=0; px<32 /*HORIZ_SIZE/8*/; px+=2) {    // 256 pixel diventano 128...
-          ch1=*p1++;
-          ch2=VideoRAM[charAddress + (ch1*8) + (py & 7)];
-          color=VideoRAM[colorAddress+py];
-          color1=color >> 4; color0=color & 0xf;
+            // finire!!
 
-          writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
-                  graphColors[ch2 & 0b00100000 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
-                  graphColors[ch2 & 0b00000010 ? color1 : color0]);
-          writedata16(graphColors[ch2 & 0b00000001 ? color1 : color0]); // 128->160
-          
-          ch1=*p1++;
-          }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-      for(py=rowFin/3; py<(rowFin*2)/3; py+=2) {    //
-        p1=((BYTE*)&VideoRAM[videoAddress]) + (py*32 /*HORIZ_SIZE/8*/);
-        // mettere bordo?
-        for(px=0; px<32 /*HORIZ_SIZE/8*/; px+=2) {    // 256 pixel diventano 128...
-          ch1=*p1++;
-          ch2=VideoRAM[charAddress +2048 + (ch1*8) + (py & 7)];
-          color=VideoRAM[colorAddress+2048+py];
-          color1=color >> 4; color0=color & 0xf;
-
-          writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
-                  graphColors[ch2 & 0b00100000 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
-                  graphColors[ch2 & 0b00000010 ? color1 : color0]);
-          writedata16(graphColors[ch2 & 0b00000001 ? color1 : color0]); // 128->160
-          
-          ch1=*p1++;
-          }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-      for(py=(rowFin*2)/3; py<rowFin; py+=2) {    // 
-        p1=((BYTE*)&VideoRAM[videoAddress]) + (py*32 /*HORIZ_SIZE/8*/);
-        // mettere bordo?
-        for(px=0; px<32 /*HORIZ_SIZE/8*/; px+=2) {    // 256 pixel diventano 128...
-          ch1=*p1++;
-          ch2=VideoRAM[charAddress +4096 + (ch1*8) + (py & 7)];
-          color=VideoRAM[colorAddress+4096+py];
-          color1=color >> 4; color0=color & 0xf;
-
-          writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
-                  graphColors[ch2 & 0b00100000 ? color1 : color0]);
-          writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
-                  graphColors[ch2 & 0b00000010 ? color1 : color0]);
-          writedata16(graphColors[ch2 & 0b00000001 ? color1 : color0]); // 128->160
-          
-          ch1=*p1++;
-          }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-      goto handle_sprites;
-      break;
-    case 2:     // multicolor
-      for(py=rowIni; py<rowFin; py+=4) {    // 48 linee diventano 96
-        p1=((BYTE*)&VideoRAM[videoAddress]) + (py*16);
-        ch1=*p1++;
-        p2=((BYTE*)&VideoRAM[charAddress+ch1]);
-        // mettere bordo
-        for(px=0; px<HORIZ_SIZE; px+=2) {    // 64 pixel diventano 128
-          ch2=*p2++;
-          color=VideoRAM[colorAddress+ch2];
-          color1=color >> 4; color0=color & 0xf;
-          
-          // finire!!
-
-          writedata16x2(graphColors[color1],graphColors[color0]);
-          }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-      goto handle_sprites;
-      break;
-    case 4:     // text 32x24
-      color1=TMS9918Reg[7] >> 4; color0=TMS9918Reg[7] & 0xf;
-      for(py=rowIni/8; py<rowFin/8; py++) {    // 192 linee(32 righe char) diventa 96
-        p2=((BYTE*)&VideoRAM[videoAddress]) + (py*40);
-        // mettere bordo
-        for(row1=0; row1<8; row1+=2) {    // 192 linee(32 righe char) diventa 96
-          p1=p2;
-          for(px=0; px<40; px++) {    // 240 pixel diventano 120...
-            ch1=*p1++;
-            ch2=VideoRAM[charAddress + (ch1*8) + (row1)];
-
-            writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
-                    graphColors[ch2 & 0b00100000 ? color1 : color0]);
-            writedata16x2(graphColors[ch2 & 0b00010000 ? color1 : color0],
-                    graphColors[ch2 & 0b00001000 ? color1 : color0]);
-
-            }
-          }
-    #ifdef USA_SPI_HW
-        ClrWdt();
-    #endif
-        }
-      break;
-    }
-  setAddrWindow(0,((rowFin-rowIni)/2)+(_height-(rowFin-rowIni)/2)/2,
-    _width,(_height-(rowFin-rowIni)/2)/2);
-  for(py=(_height-(rowFin-rowIni)/2)/2; py; py--)    // bordo/sfondo
-    for(px=0; px<_width; px++)
-      writedata16(graphColors[TMS9918Reg[7] & 0xf]);
-  
+            writedata16x2(graphColors[color1],graphColors[color0]);
+#ifdef DO_STRETCH
+// faer              writedata16(graphColors[ch2 & 0b00000001 ? color1 : color0]);   // da 256 a 288
 #endif
-  END_WRITE();
-  //	writecommand(CMD_NOP);
+            }
+  				for(px=0; px<HORIZ_OFFSCREEN; px++)
+            writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+#ifdef DO_STRETCH
+          if(!lines9) {
+            py--;   // da 192 a 216
+            lines9=1;
+            }
+#endif
+          ClrWdt();
+          }
+        goto handle_sprites;
+        break;
+        
+      case 4:     // text 32x24, ~120mS, O1 opp O2, 2/7/24
+        color1=TMS9918Reg[7] >> 4; color0=TMS9918Reg[7] & 0xf;
+        for(py=rowIni/8; py<rowFin/8; py++) {    // 192 linee(32 righe char) 
+          p2=((BYTE*)&TMSVideoRAM[videoAddress]) + (py*40);
+#ifdef DO_STRETCH
+          lines9=0;
+#endif
+  				for(px=0; px<HORIZ_OFFSCREEN; px++)
+            writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+          for(row1=0; row1<8; row1++) {    // 192 linee(32 righe char) 
+            p1=p2;
+            for(px=0; px<40; px++) {    // 240 pixel 
+              ch1=*p1++;
+              ch2=TMSVideoRAM[charAddress + (ch1*8) + (row1)];
 
-   
+              writedata16x2(graphColors[ch2 & 0b10000000 ? color1 : color0],
+                      graphColors[ch2 & 0b01000000 ? color1 : color0]);
+              writedata16x2(graphColors[ch2 & 0b00100000 ? color1 : color0],
+                      graphColors[ch2 & 0b00010000 ? color1 : color0]);
+              writedata16x2(graphColors[ch2 & 0b00001000 ? color1 : color0],
+                      graphColors[ch2 & 0b00000100 ? color1 : color0]);
+#ifdef DO_STRETCH
+              writedata16(graphColors[ch2 & 0b00000001 ? color1 : color0]);   // da 240 a 320
+#endif
+              }
+  //          for(px=0; px<8; px++)     // 240 -> 256
+  //            writedata16x2(0,0);
+#ifdef DO_STRETCH
+            if(!lines9) {
+              row1--;   // da 192 a 216
+              lines9=1;
+              }
+#endif
+            }
+  				for(px=0; px<HORIZ_OFFSCREEN; px++)
+            writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+          ClrWdt();
+          }
+        break;
+      }
+    }
+
+  if(rowFin>=_height-VERT_OFFSCREEN) {
+    setAddrWindow(0,_height-VERT_OFFSCREEN,_width,VERT_OFFSCREEN);
+    for(py=0; py<VERT_OFFSCREEN; py++) {
+#ifdef DO_STRETCH
+      for(px=0; px<((HORIZ_SIZE*9)/8+HORIZ_OFFSCREEN*2); px++)
+#else
+      for(px=0; px<(HORIZ_SIZE+HORIZ_OFFSCREEN*2); px++)
+#endif
+        writedata16(graphColors[TMS9918Reg[7] & 0xf]);
+      }
+    }
+  
+
+  END_WRITE();    // 
+  
+
+  //	writecommand(CMD_NOP);
     
 //    LED3 = 0;
 
-    }
   }  
   
 
 
-extern const unsigned char TI994A_BIN_GROM[],TI994A_BIN2[],TI994A_BIN_U610[],TI994A_BIN_U611[];
+extern const unsigned char TI994A_BIN_GROM0[],TI994A_BIN_GROM1[],TI994A_BIN_GROM2[],
+    TI994A_BIN2[],TI994A_BIN_U610[],TI994A_BIN_U611[];
 
 int main(void) {
   int i;
@@ -547,26 +631,61 @@ int main(void) {
   // disable JTAG port
 //  DDPCONbits.JTAGEN = 0;
   
+  SYSKEY = 0x00000000;
+  SYSKEY = 0xAA996655;
+  SYSKEY = 0x556699AA;
   CFGCONbits.IOLOCK = 0;      // PPS Unlock
+  SYSKEY = 0x00000000;
+#ifdef ST7735
   RPB15Rbits.RPB15R = 4;        // Assign RPB15 as U6TX, pin 30
   U6RXRbits.U6RXR = 2;      // Assign RPB14 as U6RX, pin 29 
 #ifdef USA_SPI_HW
   RPG8Rbits.RPG8R = 6;        // Assign RPG8 as SDO2, pin 6
 //  SDI2Rbits.SDI2R = 1;        // Assign RPG7 as SDI2, pin 5
 #endif
-  RPD5Rbits.RPD5R = 12;        // Assign RPD5 as OC1, pin 53; anche vaga uscita audio :)
+  RPD5Rbits.RPD5R = 12;        // Assign RPD5 as OC1, pin 53; vaga uscita audio :)
+  RPD1Rbits.RPD1R = 12;        // Assign RPD1 as OC1, pin 49; buzzer
+#endif
+#ifdef ILI9341
+  RPB9Rbits.RPB9R = 1;        // Assign RPB9 as U3TX, pin 22 (ok arduino)
+// NON SI PUO'... sistemare se serve  U3RXRbits.U3RXR = 2;      // Assign RPB8 as U3RX, pin 21 (ok arduino)
+//  RPB9Rbits.RPB9R = 1;        // Assign RPB9 as U3TX, pin 22 IO1
+//  U4RXRbits.U4RXR = 2;      // Assign RPB8 as U4RX, pin 21 IO0 NON VA come coppia sulla stessa UART... :( se serve...
+
+  RPB1Rbits.RPB1R = 12;       // Assign RPB1 as OC7, pin 15
+//  PPSOutput(4,RPB1,OC7);   //buzzer 4KHz , qua rimappabile 
+#endif
+
+  SYSKEY = 0x00000000;
+  SYSKEY = 0xAA996655;
+  SYSKEY = 0x556699AA;
   CFGCONbits.IOLOCK = 1;      // PPS Lock
+  SYSKEY = 0x00000000;
 
-//  PPSOutput(4,RPC4,OC1);   //buzzer 4KHz , qua rimappabile 
 
+//#define DEBUG_TESTREFCLK  
 #ifdef DEBUG_TESTREFCLK
 // test REFCLK
+#ifdef ST7735
   PPSOutput(4,RPC4,REFCLKO2);   // RefClk su pin 1 (RG15, buzzer)
 	REFOCONbits.ROSSLP=1;
 	REFOCONbits.ROSEL=1;
 	REFOCONbits.RODIV=0;
 	REFOCONbits.ROON=1;
 	TRISFbits.TRISF3=1;
+#endif
+#ifdef ILI9341
+//  RPD9Rbits.RPD9R = 15;        // Assign RPD9 (SDA) as RefClk3, pin 43
+  RPB8Rbits.RPB8R = 15;        // Assign RPB8 as RefClk3, pin 21 + comodo
+	REFO3CONbits.SIDL=0;
+	REFO3CONbits.RSLP=1;
+	REFO3CONbits.ROSEL=1;   // PBclk
+	REFO3CONbits.RODIV=1;   // :2
+	REFO3CONbits.OE=1;
+	REFO3CONbits.ON=1;
+//	TRISDbits.TRISD9=1;
+	TRISBbits.TRISB8=1;
+#endif
 #endif
 
 //	PPSLock;
@@ -605,6 +724,7 @@ int main(void) {
   //myINTEnableSystemMultiVectoredInt(();
 
     
+#ifdef ST7735
 	TRISB=0b0000000000110000;			// AN4,5 (rb4..5)
 	TRISC=0b0000000000000000;
 	TRISD=0b0000000000001100;			// 2 pulsanti
@@ -620,23 +740,49 @@ int main(void) {
   CNPUDbits.CNPUD3=1;
   CNPUGbits.CNPUG6=1;   // I2C tanto per
   CNPUGbits.CNPUG8=1;  
+#endif
+#ifdef ILI9341
 
+	TRISB=0b0000000000000001;			// pulsante; [ AN ?? ] ; buzzer
+	TRISC=0b0000000000000000;
+	TRISD=0b0000000000000000;			// 2led
+	TRISE=0b0000000000000000;			// led
+	TRISF=0b0000000000000001;			// pulsante
+	TRISG=0b0000000000000000;			// SPI2 (rg6..8)
+
+  ANSELB=0;
+  ANSELE=0;
+  ANSELG=0;
+
+  CNPUFbits.CNPUF0=1;   // switch/pulsanti
+  CNPUBbits.CNPUB0=1;
+  CNPUDbits.CNPUD9=1;   // I2C tanto per
+  CNPUDbits.CNPUD10=1;  
+#endif
       
+//  ShortDelay(50000); 
+//  __delay_ms(50);
   
   Timer_Init();
   PWM_Init();
-  UART_Init(/*230400L*/ 115200L);
+//  UART_Init(/*230400L*/ 115200L);     // si blocca boh qua 5/5/26 #cancrojuventini #leucemiagiulianoleone
 
   myINTEnableSystemMultiVectoredInt();
-  ShortDelay(50000); 
 
   
 //    	ColdReset=0;    Emulate(0);
 
 #ifndef USING_SIMULATOR
 //#ifndef __DEBUG
+#ifdef ST7735
   Adafruit_ST7735_1(0,0,0,0,-1);
   Adafruit_ST7735_initR(INITR_BLACKTAB);
+#endif
+#ifdef ILI9341
+  Adafruit_ILI9341_8(8, 9, 10, 11, 12, 13, 14);
+	begin(0);
+  __delay_ms(200);
+#endif
   
 //  displayInit(NULL);
   
@@ -653,13 +799,15 @@ int main(void) {
 
 	drawBG();
   
-  __delay_ms(200);
-  
+  __delay_ms(500);
+	clearScreen();
+
+/*  __delay_ms(200);
 	gfx_fillRect(3,_TFTHEIGHT-20,_TFTWIDTH-6,16,BLACK);
  	setTextColor(BLUE);
 	LCDXY(1,13);
 	gfx_print("(emulating Ti99/4A)");
-  __delay_ms(1000);
+  __delay_ms(1000);*/
 
 
 //#endif
@@ -667,27 +815,41 @@ int main(void) {
   
 
 //  memcpy(rom_seg,TI994A_BIN,0x1800);
-  memcpy(grom_seg,TI994A_BIN_GROM,0x1800);
+  memcpy(grom_seg,TI994A_BIN_GROM0,0x1800);
+  memcpy(grom_seg+0x2000,TI994A_BIN_GROM1,0x1800);
+  memcpy(grom_seg+0x2000*2,TI994A_BIN_GROM2,0x1800);
   for(i=0; i<8192; i+=2) {
-    rom_seg[i]=TI994A_BIN_U611[i/2];
-    rom_seg[i+1]=TI994A_BIN_U610[i/2];
+    rom_seg[i+1]=TI994A_BIN_U611[i/2];
+    rom_seg[i]=TI994A_BIN_U610[i/2];
     }
 
         
 	ColdReset=0;
 
+  initHW();
   Emulate(0);
 
   }
 
 
+enum CACHE_MODE {
+  UNCACHED=0x02,
+  WB_WA=0x03,
+  WT_WA=0x01,
+  WT_NWA=0x00,
+/* Cache Coherency Attributes */
+//#define _CACHE_WRITEBACK_WRITEALLOCATE      3
+//#define _CACHE_WRITETHROUGH_WRITEALLOCATE   1
+//#define _CACHE_WRITETHROUGH_NOWRITEALLOCATE 0
+//#define _CACHE_DISABLE                      2
+  };
 void mySYSTEMConfigPerformance(void) {
   unsigned PLLIDIV;
   unsigned PLLMUL;
   unsigned PLLODIV;
   float CLK2USEC;
   unsigned SYSCLK;
-  static unsigned char PLLODIVVAL[]={
+  unsigned char PLLODIVVAL[]={
     2,2,4,8,16,32,32,32
     };
 	unsigned int cp0;
@@ -715,14 +877,14 @@ void mySYSTEMConfigPerformance(void) {
     PRECONbits.PFMWS=7;
 
   PRECONbits.PFMSECEN=0;    // non c'è nella versione "2019" ...
-  PRECONbits.PREFEN=0x1;
+  PRECONbits.PREFEN=0b10;
 
   SYSKEY = 0x0;
 
   // Set up caching
   cp0 = _mfc0(16, 0);
   cp0 &= ~0x07;
-  cp0 |= 0b011; // K0 = Cacheable, non-coherent, write-back, write allocate
+  cp0 |= WB_WA /*0b011*/; // K0 = Cacheable, non-coherent, write-back, write allocate
   _mtc0(16, 0, cp0);  
   }
 
@@ -809,7 +971,7 @@ void Timer_Init(void) {
 
   T2CON=0;
   T2CONbits.TCS = 0;                  // clock from peripheral clock
-  T2CONbits.TCKPS = 7;                // 1:256 prescaler (pwm clock=390625Hz)
+  T2CONbits.TCKPS = 0b111;            // 1:256 prescaler (pwm clock=1.4KHz circa se buzzer viene impostato a 0x50)
   T2CONbits.T32 = 0;                  // 16bit
 //  PR2 = 2000;                         // rollover every n clocks; 2000 = 50KHz
   PR2 = 65535;                         // per ora faccio solo onda quadra
@@ -818,7 +980,7 @@ void Timer_Init(void) {
   // TIMER 3 INITIALIZATION (TIMER IS USED AS A TRIGGER SOURCE FOR ALL CHANNELS).
   T3CON=0;
   T3CONbits.TCS = 0;                  // clock from peripheral clock
-  T3CONbits.TCKPS = 4;                // 1:16 prescaler
+  T3CONbits.TCKPS = 0b100;            // 1:16 prescaler
   PR3 = (GetPeripheralClock()/16)/1600;         // 1600Hz
   T3CONbits.TON = 1;                  // start timer 
 
@@ -830,107 +992,98 @@ void Timer_Init(void) {
 
 void PWM_Init(void) {
 
+  SYSKEY = 0x00000000;
+  SYSKEY = 0xAA996655;
+  SYSKEY = 0x556699AA;
   CFGCONbits.OCACLK=0;      // sceglie timer per PWM
+  SYSKEY = 0x00000000;
   
+#ifdef ST7735
   OC1CON = 0x0006;      // TimerX ossia Timer2; PWM mode no fault; Timer 16bit, TimerX
 //  OC1R    = 500;		 // su PIC32 è read-only!
 //  OC1RS   = 1000;   // 50%, relativo a PR2 del Timer2
   OC1R    = 32768;		 // su PIC32 è read-only!
   OC1RS   = 0;        // per ora faccio solo onda quadra, v. SID reg. 0-1
   OC1CONbits.ON = 1;   // on
+#endif
+#ifdef ILI9341
+  OC7CON = 0x0006;      // TimerX ossia Timer2; PWM mode no fault; Timer 16bit, TimerX
+//  OC7R    = 500;		 // su PIC32 è read-only!
+//  OC7RS   = 1000;   // 50%, relativo a PR2 del Timer2
+  OC7R    = 32768;		 // su PIC32 è read-only!
+  OC7RS   = 0;        // per ora faccio solo onda quadra, v. SID reg. 0-1
+  OC7CONbits.ON = 1;   // on
+#endif
 
   }
 
 void UART_Init(DWORD baudRate) {
   
-  U6MODE=0b0000000000001000;    // BRGH=1
-  U6STA= 0b0000010000000000;    // TXEN
+  U3MODE=0b0000000000001000;    // BRGH=1
+  U3STA= 0b0000010000000000;    // TXEN
   DWORD baudRateDivider = ((GetPeripheralClock()/(4*baudRate))-1);
-  U6BRG=baudRateDivider;
-  U6MODEbits.ON=1;
-  
-#if 0
-  ANSELDCLR = 0xFFFF;
-  CFGCONbits.IOLOCK = 0;      // PPS Unlock
-  RPD11Rbits.RPD11R = 3;        // Assign RPD11 as U1TX
-  U1RXRbits.U1RXR = 3;      // Assign RPD10 as U1RX
-  CFGCONbits.IOLOCK = 1;      // PPS Lock
-
-  // Baud related stuffs.
-  U1MODEbits.BRGH = 1;      // Setup High baud rates.
-  unsigned long int baudRateDivider = ((GetSystemClock()/(4*baudRate))-1);
-  U1BRG = baudRateDivider;  // set BRG
-
-  // UART Configuration
-  U1MODEbits.ON = 1;    // UART1 module is Enabled
-  U1STAbits.UTXEN = 1;  // TX is enabled
-  U1STAbits.URXEN = 1;  // RX is enabled
-
-  // UART Rx interrupt configuration.
-  IFS1bits.U1RXIF = 0;  // Clear the interrupt flag
-  IFS1bits.U1TXIF = 0;  // Clear the interrupt flag
-
-  INTCONbits.MVEC = 1;  // Multi vector interrupts.
-
-  IEC1bits.U1RXIE = 1;  // Rx interrupt enable
-  IEC1bits.U1EIE = 1;
-  IPC7bits.U1IP = 7;    // Rx Interrupt priority level
-  IPC7bits.U1IS = 3;    // Rx Interrupt sub priority level
-#endif
+  U3BRG=baudRateDivider;
+  U3MODEbits.ON=1;
+ 
   }
 
 char BusyUART1(void) {
   
-  return(!U6STAbits.TRMT);
+  return(!U3STAbits.TRMT);
+  }
+
+char DataRdyUART1(void) {
+  
+  return(U3STAbits.URXDA);
   }
 
 void putsUART1(unsigned int *buffer) {
   char *temp_ptr = (char *)buffer;
 
     // transmit till NULL character is encountered 
-
-  if(U6MODEbits.PDSEL == 3)        /* check if TX is 8bits or 9bits */
+  if(U3MODEbits.PDSEL == 3)        /* check if TX is 8bits or 9bits */
     {
         while(*buffer) {
-            while(U6STAbits.UTXBF); /* wait if the buffer is full */
-            U6TXREG = *buffer++;    /* transfer data word to TX reg */
+            while(U3STAbits.UTXBF); /* wait if the buffer is full */
+            U3TXREG = *buffer++;    /* transfer data word to TX reg */
         }
     }
   else {
         while(*temp_ptr) {
-            while(U6STAbits.UTXBF);  /* wait if the buffer is full */
-            U6TXREG = *temp_ptr++;   /* transfer data byte to TX reg */
+            while(U3STAbits.UTXBF);  /* wait if the buffer is full */
+            U3TXREG = *temp_ptr++;   /* transfer data byte to TX reg */
         }
     }
   }
 
 unsigned int ReadUART1(void) {
   
-  if(U6MODEbits.PDSEL == 3)
-    return (U6RXREG);
+  if(U3MODEbits.PDSEL == 3)
+    return (U3RXREG);
   else
-    return (U6RXREG & 0xFF);
+    return (U3RXREG & 0xFF);
   }
 
 void WriteUART1(unsigned int data) {
   
-  if(U6MODEbits.PDSEL == 3)
-    U6TXREG = data;
+  if(U3MODEbits.PDSEL == 3)
+    U3TXREG = data;
   else
-    U6TXREG = data & 0xFF;
+    U3TXREG = data & 0xFF;
   }
 
-void __ISR(_UART1_RX_VECTOR) UART1_ISR(void) {
-  
-  LATDbits.LATD4 ^= 1;    // LED to indicate the ISR.
-  char curChar = U1RXREG;
-  IFS3bits.U1RXIF = 0;  // Clear the interrupt flag!
+
+void __ISR(_UART3_RX_VECTOR) UART3_ISR(void) {
+
+#warning VERIFICARE UART!!!!
+  LED3 ^= 1;    // LED to indicate the ISR.
+  char curChar = U3RXREG;
+  IFS4bits.U3RXIF = 0;  // Clear the interrupt flag!
   }
 
 
 int emulateKBD(BYTE ch) {
   int i;
-
   
 	switch(toupper(ch)) {   // solo maiuscole qua..
     case 0:
@@ -938,168 +1091,253 @@ int emulateKBD(BYTE ch) {
         Keyboard[i]=0xff;
       // FORSE non dovremmo rilasciare i modifier, qua???
       break;
-		case '£':
-			Keyboard[0] &= ~0b00000001;
-		case ' ':
-			Keyboard[7] &= ~0b00000001;
-			break;
-      // minuscole/maiuscole?
-		case 'A':
-			Keyboard[1] &= ~0b00000001;
-			break;
-		case '|':    // OR ...
-			Keyboard[0] &= ~0b00000001;
-		case 'B':
-			Keyboard[7] &= ~0b00010000;
-			break;
-		case '?':
-			Keyboard[0] &= ~0b00000001;
-		case 'C':
-			Keyboard[0] &= ~0b00001000;
-			break;
-		case 'D':
-			Keyboard[1] &= ~0b00000100;
-			break;
-		case 'E':
-			Keyboard[2] &= ~0b00000100;
-			break;
-		case 'F':
-			Keyboard[1] &= ~0b00001000;
-			break;
-		case 'G':
-			Keyboard[1] &= ~0b00010000;
-			break;
-		case '^':   // ** doppio asterisco in effetti ...
-			Keyboard[0] &= ~0b00000001;
-		case 'H':
-			Keyboard[6] &= ~0b00010000;
-			break;
-		case '(':
-			Keyboard[0] &= ~0b00000001;
-		case 'I':
-			Keyboard[5] &= ~0b00000100;
-			break;
-		case '-':
-			Keyboard[0] &= ~0b00000001;
-		case 'J':
-			Keyboard[6] &= ~0b00001000;
-			break;
-		case '+':
-			Keyboard[0] &= ~0b00000001;
-		case 'K':
-			Keyboard[6] &= ~0b00000100;
-			break;
-		case '=':
-			Keyboard[0] &= ~0b00000001;
-		case 'L':
-			Keyboard[6] &= ~0b00000010;
-			break;
-		case '>':
-			Keyboard[0] &= ~0b00000001;
-		case 'M':
-			Keyboard[7] &= ~0b00000100;
-			break;
-		case '<':
-			Keyboard[0] &= ~0b00000001;
-		case 'N':
-			Keyboard[7] &= ~0b00001000;
-			break;
-		case ')':
-			Keyboard[0] &= ~0b00000001;
-		case 'O':
-			Keyboard[5] &= ~0b00000010;
-			break;
-		case '*':
-			Keyboard[0] &= ~0b00000001;
-		case 'P':
-			Keyboard[5] &= ~0b00000001;
-			break;
-		case 'Q':
-			Keyboard[2] &= ~0b00000001;
-			break;
-		case 'R':
-			Keyboard[2] &= ~0b00001000;
-			break;
-		case 'S':
-			Keyboard[1] &= ~0b00000010;
-			break;
-		case 'T':
-			Keyboard[2] &= ~0b00010000;
-			break;
-		case '$':
-			Keyboard[0] &= ~0b00000001;
-		case 'U':
-			Keyboard[5] &= ~0b00001000;
-			break;
-		case '/':
-			Keyboard[0] &= ~0b00000001;
-		case 'V':
-			Keyboard[0] &= ~0b00010000;
-			break;
-		case 'W':
-			Keyboard[2] &= ~0b00000010;
-			break;
-		case ';':
-			Keyboard[0] &= ~0b00000001;
-		case 'X':
-			Keyboard[0] &= ~0b00000100;
-			break;
-		case '\"':
-			Keyboard[0] &= ~0b00000001;
-		case 'Y':
-			Keyboard[5] &= ~0b00010000;
-			break;
-		case ':':
-			Keyboard[0] &= ~0b00000001;
-		case 'Z':
-			Keyboard[0] &= ~0b00000010;
-			break;
-      
-		case '0':
-			Keyboard[4] &= ~0b00000001;
-			break;
-		case '1':
-			Keyboard[3] &= ~0b00000001;
-			break;
-		case '2':
-			Keyboard[3] &= ~0b00000010;
-			break;
-		case '3':
-			Keyboard[3] &= ~0b00000100;
-			break;
-		case '4':
-			Keyboard[3] &= ~0b00001000;
-			break;
-		case '5':
-			Keyboard[3] &= ~0b00010000;
-			break;
-		case '6':
-			Keyboard[4] &= ~0b00010000;
-			break;
-		case '7':
-			Keyboard[4] &= ~0b00001000;
-			break;
-		case '8':
-			Keyboard[4] &= ~0b00000100;
-			break;
-		case '9':
-			Keyboard[4] &= ~0b00000010;
-			break;
-		case ',':
-			Keyboard[0] &= ~0b00000001;
-		case '.':
-			Keyboard[7] &= ~0b00000010;
-			break;
-		case '\r':
-			Keyboard[6] &= ~0b00000001;
-			break;
-      
-		case 0x1f:    // Shift 
-			Keyboard[0] &= ~0b00000001;
-			break;
-      
-		}
+    case ' ':		//VK_SPACE
+      Keyboard[1]&=~0b10000000;
+      break;
+    case 'A':
+      Keyboard[5]&=~0b00000100;
+      break;
+    case 'B':
+      Keyboard[7]&=~0b00001000;
+      break;
+    case 'C':
+      Keyboard[7]&=~0b00100000;
+      break;
+    case 'D':
+      Keyboard[5]&=~0b00100000;
+      break;
+    case 'E':
+      Keyboard[6]&=~0b00100000;
+      break;
+    case 'F':
+      Keyboard[5]&=~0b00010000;
+      break;
+    case 'G':
+      Keyboard[5]&=~0b00001000;
+      break;
+    case 'H':
+      Keyboard[1]&=~0b00001000;
+      break;
+    case 'I':
+      Keyboard[2]&=~0b00100000;
+      break;
+    case 'J':
+      Keyboard[1]&=~0b00010000;
+      break;
+    case 'K':
+      Keyboard[1]&=~0b00100000;
+      break;
+    case 'L':
+      Keyboard[1]&=~0b01000000;
+      break;
+    case 'M':
+      Keyboard[0]&=~0b00010000;
+      break;
+    case 'N':
+      Keyboard[0]&=~0b00001000;
+      break;
+    case 'O':
+      Keyboard[2]&=~0b01000000;
+      break;
+    case 'P':
+      Keyboard[2]&=~0b00000100;
+      break;
+    case 'Q':
+      Keyboard[6]&=~0b00000100;
+      break;
+    case 'R':
+      Keyboard[6]&=~0b00010000;
+      break;
+    case 'S':
+      Keyboard[5]&=~0b01000000;
+      break;
+    case 'T':
+      Keyboard[6]&=~0b00001000;
+      break;
+    case 'U':
+      Keyboard[2]&=~0b00010000;
+      break;
+    case 'V':
+      Keyboard[7]&=~0b00010000;
+      break;
+    case 'W':
+      Keyboard[6]&=~0b01000000;
+      break;
+    case 'X':
+      Keyboard[7]&=~0b01000000;
+      break;
+    case 'Y':
+      Keyboard[2]&=~0b00001000;
+      break;
+    case 'Z':
+      Keyboard[7]&=~0b00000100;
+      break;
+    case '0':
+      Keyboard[3]&=~0b00000100;
+      break;
+    case '1':
+      Keyboard[4]&=~0b00000100;
+      break;
+    case '2':
+      Keyboard[4]&=~0b01000000;
+      break;
+    case '3':
+      Keyboard[4]&=~0b00100000;
+      break;
+    case '4':
+      Keyboard[4]&=~0b00010000;
+      break;
+    case '5':
+      Keyboard[4]&=~0b00001000;
+      break;
+    case '6':
+      Keyboard[3]&=~0b00001000;
+      break;
+    case '7':
+      Keyboard[3]&=~0b00010000;
+      break;
+    case '8':
+      Keyboard[3]&=~0b00100000;
+      break;
+    case '9':
+      Keyboard[3]&=~0b01000000;
+      break;
+/*			case VK_HOME:
+      break;
+    case VK_DOWN:
+      Keyboard[4]&=~0b10000000;
+      Keyboard[7]&=~0b01000000;
+      break;
+    case VK_RIGHT:
+      Keyboard[4]&=~0b10000000;
+      Keyboard[5]&=~0b00100000;
+      break;
+    case VK_UP:
+      Keyboard[4]&=~0b10000000;
+      Keyboard[6]&=~0b00100000;
+      break;
+    case VK_LEFT:
+      Keyboard[4]&=~0b10000000;
+      Keyboard[5]&=~0b01000000;
+      break;
+    case VK_LSHIFT:
+    case VK_SHIFT:
+    case VK_RSHIFT:
+      Keyboard[5]&=~0b10000000;
+      break;
+    case VK_CONTROL:
+      Keyboard[6]&=~0b10000000;
+      break;
+    case VK_MENU:     // alt ossia FCTN
+      Keyboard[4]&=~0b10000000;
+      break;
+    case VK_CAPITAL:
+      break;
+    case VK_MULTIPLY:
+      Keyboard[5]&=~0b10000000;
+      Keyboard[3]&=~0b00100000;
+      break;
+    case VK_SUBTRACT:
+      Keyboard[5]&=~0b10000000;
+      Keyboard[0]&=~0b00000100;
+      break;
+    case 0xdb:		// '?
+      break;
+    case 0xdd:		// ì^
+      Keyboard[0]&=~0b10000000);
+      break;*/
+    case '\"':		// à#  faccio "
+      Keyboard[4]&=~0b10000000;
+      Keyboard[2]&=~0b00000100;
+      break;
+    case 0xba:		// è
+      Keyboard[4]&=~0b10000000;
+      Keyboard[6]&=~0b00010000;			// sarebbe R o F a seconda
+      break;
+    case 0xbb:
+      Keyboard[4]&=~0b10000000;
+      Keyboard[6]&=~0b00001000;			// sarebbe T o G a seconda
+      break;
+    case '+':
+      Keyboard[5]&=~0b10000000;
+      Keyboard[0]&=~0b10000000;
+      break;
+    case 0xc0:		// ò@
+      break;
+    case '~':		// ù		~
+      Keyboard[4]&=~0b10000000;
+      Keyboard[2]&=~0b01000000;
+      break;
+    case ',':		// ,
+      Keyboard[0]&=~0b00100000;
+      break;
+//			case VK_DECIMAL:
+//		case VK_OEM_PERIOD          /*'.'*/:
+    case '.':		// .
+      Keyboard[0]&=~0b01000000;
+      break;
+    case '/':		// -_
+//			case VK_DIVIDE:
+      Keyboard[0]&=~0b00000100;
+      break;
+    case '\r':
+//			case VK_RETURN:
+      Keyboard[2]&=~0b10000000;
+      break;
+    case '\x8':			// FCNT 9
+      Keyboard[4]&=~0b10000000;
+//				Keyboard[3]&=~0b01000000);		// non va... forse extended basic?
+      Keyboard[5]&=~0b01000000;		// faccio left quindi
+      break;
+//			case VK_DELETE:		// FCNT 1
+//				Keyboard[4]&=~0b10000000;
+//				Keyboard[4]&=~0b00000100;
+//				break;
+    case 0xa1 /*VK_F1*/:
+      Keyboard[4]&=~0b10000000;
+      Keyboard[4]&=~0b00000100;
+      break;
+    case 0xa2 /*VK_F2*/:
+      break;
+    case 0xa3 /*VK_F3*/:				// FCNT 3
+      Keyboard[4]&=~0b10000000;
+      Keyboard[4]&=~0b00100000;
+      break;
+    case 0xa4 /*VK_F4*/:				// FCNT 4
+      Keyboard[4]&=~0b10000000;
+      Keyboard[4]&=~0b00010000;
+      break;
+    case 0xa5 /*VK_F5*/:
+      break;
+    case 0xa6 /*VK_F6*/:
+      break;
+    case 0xa7 /*VK_F7*/:
+      break;
+    case 0xa8 /*VK_F8*/:				// FCNT 8
+      Keyboard[4]&=~0b10000000;
+      Keyboard[3]&=~0b00100000;
+      break;
+    case '|':		// |\ :)
+      Keyboard[4]&=~0b10000000;
+      Keyboard[5]&=~0b00000100;		// sarebbe A opp. Z a seconda del simbolo...
+      break;
+    case '<':		// <  :)
+      Keyboard[4]&=~0b10000000;
+      Keyboard[7]&=~0b00000100;
+      break;
+    case '\x1b' /*VK_ESCAPE*/:		// faccio come CLEAR ossia FCTN 4
+      Keyboard[4]&=~0b10000000;
+      Keyboard[4]&=~0b00010000;
+      break;
+//			case VK_PAUSE:
+//				break;
+    case 0xac /*VK_F12*/:			// simulo reset! FCNT =
+      Keyboard[4]&=~0b10000000;
+      Keyboard[0]&=~0b10000000;
+      break;
+    }
   
+ 
   
 no_irq:
     ;
@@ -1108,12 +1346,12 @@ no_irq:
 BYTE whichKeysFeed=0;
 char keysFeed[32]={0};
 volatile BYTE keysFeedPtr=255;
-const char *keysFeed1="4Y\r";   // 
+const char *keysFeed1="\r";   // 
 const char *keysFeed2="1\r";   // 1 
-const char *keysFeed3="2Oi,\r";   // 2 PRINT I,
-const char *keysFeed4="3G1\r";   // 
-const char *keysFeed5="R\r";   // RUN
-const char *keysFeed6="A\r";   // LIST
+const char *keysFeed3="10 PRINT 3.14\r";   //
+const char *keysFeed4="20 GOTO 10\r";   // 
+const char *keysFeed5="LIST\r";   //
+const char *keysFeed6="RUN\r";   // 
 
 void __ISR(_TIMER_3_VECTOR,ipl4SRS) TMR_ISR(void) {
 // https://www.microchip.com/forums/m842396.aspx per IRQ priority ecc
@@ -1125,67 +1363,13 @@ void __ISR(_TIMER_3_VECTOR,ipl4SRS) TMR_ISR(void) {
 
 #define TIMIRQ_DIVIDER 32   // 50Hz
   
-  //LED2 ^= 1;      // check timing: 1600Hz, 9/11/19 (fuck berlin day)) 2022 ok fuck UK ;) & anyone
+  LED3 ^= 1;      // check timing: 1600Hz, 7/5/26 (fuck mankind
   
   divider++;
-#ifdef USING_SIMULATOR
-  if(divider>=1) {   // 
-#else
-  if(divider>=TIMIRQ_DIVIDER) {   //
-#endif
-    divider=0;
-//    CIA1IRQ=1;
-    TIMIRQ=1;     // 50Hz, come VSync
-    }
 
 
   dividerTim++;
   if(dividerTim>=1600) {   // 1Hz RTC
-#ifdef SKYNET
-    // vedere registro 0A, che ha i divisori...
-    // i146818RAM[10] & 15
-    dividerTim=0;
-    if(!(i146818RAM[11] & 0x80)) {    // SET
-      i146818RAM[10] |= 0x80;
-      currentTime.sec++;
-      if(currentTime.sec >= 60) {
-        currentTime.sec=0;
-        currentTime.min++;
-        if(currentTime.min >= 60) {
-          currentTime.min=0;
-          currentTime.hour++;
-          if( ((i146818RAM[11] & 2) && currentTime.hour >= 24) || 
-            (!(i146818RAM[11] & 2) && currentTime.hour >= 12) ) {
-            currentTime.hour=0;
-            currentDate.mday++;
-            i=dayOfMonth[currentDate.mon-1];
-            if((i==28) && !(currentDate.year % 4))
-              i++;
-            if(currentDate.mday > i) {		// (rimangono i secoli...)
-              currentDate.mday=0;
-              currentDate.mon++;
-              if(currentDate.mon > 12) {		// 
-                currentDate.mon=1;
-                currentDate.year++;
-                }
-              }
-            }
-          }
-        } 
-      i146818RAM[12] |= 0x90;
-      i146818RAM[10] &= ~0x80;
-      } 
-    else
-      i146818RAM[10] &= ~0x80;
-    // inserire Alarm... :)
-    i146818RAM[12] |= 0x40;     // in effetti dice che deve fare a 1024Hz! o forse è l'altro flag, bit3 ecc
-    if(i146818RAM[12] & 0x40 && i146818RAM[11] & 0x40 ||
-       i146818RAM[12] & 0x20 && i146818RAM[11] & 0x20 ||
-       i146818RAM[12] & 0x10 && i146818RAM[11] & 0x10)     
-      i146818RAM[12] |= 0x80;
-    if(i146818RAM[12] & 0x80)     
-      RTCIRQ=1;
-#endif
 		} 
   
 

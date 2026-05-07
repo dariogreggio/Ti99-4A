@@ -925,7 +925,7 @@ void begin(void) {
 
 
 extern const char CopyrightString[];
-extern const unsigned char logo_msx[];
+extern const unsigned char logo_ti99[];
 
 void drawBG(void) {
 	char buffer[22];
@@ -935,9 +935,7 @@ void drawBG(void) {
 
 	setTextSize(1);
   
-#ifdef MSX  
-  drawBitmap4(30,34,logo_msx);
-#endif
+  drawBitmap4(30,34,logo_ti99);
   
 	setTextColor(BRIGHTGREEN);
 	LCDXY(0,1);

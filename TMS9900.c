@@ -1,120 +1,72 @@
 // https://github.com/mamedev/mame/blob/master/src/devices/cpu/tms9900/tms9900.cpp
 
+//NB  in byte access, the CPU outputs the byte on the lower as well as the upper eight data lines.
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <xc.h>
 
+#ifdef ST7735
 #include "Adafruit_ST77xx.h"
 #include "Adafruit_ST7735.h"
 #include "adafruit_gfx.h"
+#endif
+#ifdef ILI9341
+#include "Adafruit_ILI9341.h"
+#include "adafruit_gfx.h"
+#endif
 
 #include "TMS9900_PIC.h"
 
 
 
-
-extern BYTE fExit;
-extern BYTE debug;
+BYTE fExit;
+uint16_t Pipe1;
+union __attribute__((__packed__)) PIPE Pipe2;
+BYTE debug;
+extern SWORD VICRaster;
+extern BYTE ram_seg[];
+extern volatile BYTE *keysFeedPtr;
+extern const char keysFeed[];
 volatile BYTE TIMIRQ,VIDIRQ;
 
-extern volatile BYTE keysFeedPtr;
 
-BYTE DoReset=0,DoIRQ=0,DoLOAD=0,DoIdle=0;
 #define MAX_WATCHDOG 100      // x30mS v. sotto
 WORD WDCnt=MAX_WATCHDOG;
 BYTE ColdReset=1;
+BYTE CPUPins=DoReset;
 
-//#define TMS9940 1
+WORD CPUClock=2000000L/CPU_CLOCK_DIVIDER,HWClock=1000000L/HW_CLOCK_DIVIDER;
 
-uint16_t Pipe1;
-union __attribute__((__packed__)) {
-	uint16_t x;
-	uint8_t bb[4];
-	struct __attribute__((__packed__)) {
-		uint8_t l;
-		uint8_t h;
-//		BYTE u;		 bah no, sposto la pipe quando ci sono le istruzioni lunghe 4...
-		} b;
-	} Pipe2;
 
-union __attribute__((__packed__)) Z_REG {
-  uint16_t x;
-  struct __attribute__((__packed__)) { 
-    uint8_t l;
-    uint8_t h;
-    } b;
-  };
-union __attribute__((__packed__)) Z_REGISTERS {
-  uint8_t b[32];
-  union Z_REG r[16];
-  };
 
-#define ID_LG 0x1
-#define ID_AG 0x2
-#define ID_ZERO 0x4
-#define ID_CARRY 0x8
-#define ID_OVF 0x10
-#define ID_PARITY 0x20
-#define ID_XOP 0x40
-#ifdef TMS9940 
-#define ID_DIGITCARRY 0x80  // boh!
-  // v. anche 990/10?? b7=PR b8=MF
-#endif
-#define ID_INTERRUPTMASK 0xF000
-union __attribute__((__packed__)) REGISTRO_F {
-  uint16_t x;
-  struct __attribute__((__packed__)) {
-    unsigned int LogicalGreater: 1;
-    unsigned int ArithmeticGreater: 1;
-    unsigned int Zero: 1;
-    unsigned int Carry: 1;
-    unsigned int Overflow: 1;
-    unsigned int Parity: 1;   // 0=pari 1=dispari (ODD PARITY)
-    unsigned int XOP: 1;
-#ifdef TMS9940 
-    unsigned int DigitCarry: 1;   // boh
-//      unsigned int Privileged: 1;   // v. anche 990/10?? b7=PR b8=MF
-//      unsigned int MapFile: 1;   // 
-#else
-    unsigned int unused: 1;
-#endif
-    unsigned int unused2: 4;
-    unsigned int InterruptMask: 4;
-    };
-  };
-union __attribute__((__packed__)) OPERAND {
-  uint8_t *reg8;
-  uint16_t *reg16;
-  uint16_t mem;
-  };
-union __attribute__((__packed__)) RESULT {
-  struct __attribute__((__packed__)) {
-    uint8_t l;
-    uint8_t h;
-    } b;
-  uint16_t x;
-  uint32_t d;
-  };
-    
+// da 68000 Makushi o come cazzo si chiama :D
+// res2 è Source e res1 è Dest ossia quindi res3=Result
+//#define CARRY_ADD_8() (!!(((res2.b.l & res1.b.l) | (~res3.b.l & (res2.b.l | res1.b.l))) & 0x80))		// ((S & D) | (~R & (S | D)))
+// V. DEC/INC! 
+#define CARRY_ADD_8() (!!(res3.b.l < res2.b.l))
+#define OVF_ADD_8()  (!!(((res2.b.l ^ res3.b.l) & (res1.b.l ^ res3.b.l)) & 0x80))			// ((S^R) & (D^R))
+//#define CARRY_ADD_16() (!!(((res2.x & res1.x) | (~res3.x &	(res2.x | res1.x))) & 0x8000))
+#define CARRY_ADD_16() (!!(res3.x < res2.x))
+#define OVF_ADD_16() (!!(((res2.x ^ res3.x) & (res1.x ^ res3.x)) & 0x8000))
+#define CARRY_SUB_8() (!!(((res2.b.l & res3.b.l) | (~res1.b.l & (res2.b.l | res3.b.l))) & 0x80))		// ((S & R) | (~D & (S | R)))
+//#define CARRY_SUB_8() (!!((res3.b.l<res2.b.l) || (res2.b.l==0)))
+#define OVF_SUB_8()  (!!(((res2.b.l ^ res1.b.l) & (res3.b.l ^ res1.b.l)) & 0x80))			// ((S^D) & (R^D))
+#define CARRY_SUB_16() (!!(((res2.x & res3.x) | (~res1.x &	(res2.x | res3.x))) & 0x8000))
+//#define CARRY_SUB_16() (!!((res3.x<res2.x) || (res2.x==0)))
+#define OVF_SUB_16() (!!(((res2.x ^ res1.x) & (res3.x ^ res1.x)) & 0x8000))
+
+extern BYTE TMS9918Reg[],TMS9918RegS;
+extern BYTE TMS9901[];
+extern WORD TMS9901Timer,TMS9901Cnt;
+ 
+
 int Emulate(int mode) {
-//https://en.wikipedia.org/wiki/TMS9900
-#define WORKING_REG_INDEX (Pipe1 & 0xf)
-#define WORKING_REG regs1->r[workingRegIndex].x      // 
-#define WORKING_TS ((Pipe1 >> 4) & 0b11)
-#define WORKING_TD ((Pipe1 >> 10) & 0b11)
-#define REGISTER_DIRECT 0
-#define REGISTER_INDIRECT 1
-#define REGISTER_SYMBOLIC_INDEXED 2
-#define REGISTER_INDIRECT_AUTOINCREMENT 3
-#define WORKING_REG2_INDEX ((Pipe1 >> 6) & 0xf)
-#define WORKING_REG2 regs1->r[workingReg2Index].x      // 
-    
 	SWORD _pc=0;
 	SWORD _wp=0;
 	BYTE IPL=0;
-  union Z_REGISTERS *regs1;
+  union T_REGISTERS *regs=NULL;
   union RESULT res1,res2,res3;
 //  union OPERAND op1,op2;
 	union REGISTRO_F _st;
@@ -122,6 +74,12 @@ int Emulate(int mode) {
   uint8_t workingTS,workingTD,workingRegIndex,workingReg2Index;
   int c=0;
 
+	DWORD cyclesPerSec,cyclesSoFar,cyclesCPU,cyclesHW;
+	BYTE screenDivider;
+
+	cyclesPerSec=10000000L;		// AT
+	cyclesCPU=0; cyclesHW=0;
+	cyclesSoFar=0;
 
   _pc=GetIntValue(0x0002);
   _wp=GetIntValue(0x0000);
@@ -129,103 +87,123 @@ int Emulate(int mode) {
   IPL=0b0001;   // Ti99
   
   
-//  _pc=0x0935;
-//  _sp=0x8700;
-  
 
 	do {
 
+		cyclesSoFar++;
+
 		c++;
-		if(!(c & 0x3ffff)) {
+		if(!(c & 0x3fff)) {
       ClrWdt();
 // yield()
-#ifndef USING_SIMULATOR      
-			UpdateScreen(0,192);    // fare passate più piccole!
+        VICRaster+=8;					 	 // raster pos count, 200 al sec...
+        if(VICRaster >= MAX_RASTER) {		 // 
+          VICRaster=MIN_RASTER;
+//          LED2 ^= 1;      // 50Hz 8/11/19; 70mS su ILI 320x240, 7/8/20; 25mS PIC32MM 17/6/21
+          }
+
+        
+#ifdef ILI9341
+//        static BYTE divider;
+//        divider++;
+//        if(!(divider & 1))
 #endif
+#ifndef USING_SIMULATOR      
+//			UpdateScreen(0,192);    // fare passate più piccole!
+          UpdateScreen(VICRaster,VICRaster+8);
+#endif
+  //      LED3 ^= 1;
+        
 extern BYTE TMS9918Reg[8],TMS9918RegS;
       TMS9918RegS |= 0b10000000;
       if(TMS9918Reg[1] & 0b00100000) {
         VIDIRQ=1;
         }
       
-      LED1^=1;    // 42mS~ con SKYNET 7/6/20; 10~mS con Z80NE 10/7/21; 35mS GALAKSIJA 16/10/22; 30mS ZX80 27/10/22
-      // QUADRUPLICO/ecc! 27/10/22
-      
+      LED1^=1;    // 11mS~ 7/5/26
+     
       
       }
 
 		if(ColdReset) {
-      DoReset=1;
+			ColdReset=0;
+//			initHW();
+      CPUPins |= DoReset;
 			continue;
       }
 
 
-    if(TIMIRQ) {
-//      DoIRQ=1;
+    if(TIMIRQ) {		// v. TMS9901, gestire...
+      CPUPins |= DoIRQ;
+			IPL=0b0001;   // 
       TIMIRQ=0;
       }
     if(VIDIRQ) {
-//      DoIRQ=1;
+        static BYTE oldSW2;
+  
+        
+//#ifndef USING_SIMULATOR
+        if(!SW1) {        // test tastiera, me ne frego del repeat/rientro :)
+          if(keysFeedPtr==255)      // debounce...
+            keysFeedPtr=254;
+          }
+        
+        if(!SW2) {
+          if(oldSW2) {
+//            CPUPins |= DoNMI;    // solo sul fronte! o si blocca/sovraccarica
+            oldSW2=0;
+            }
+          }
+        else
+          oldSW2=1;
+//#endif
+      
+      CPUPins |= DoIRQ;
+			IPL=0b0001;   // 
       VIDIRQ=0;
       }
 
     
-		/*
-		if((_pc >= 0xa000) && (_pc <= 0xbfff)) {
-			printf("%04x    %02x\n",_pc,GetValue(_pc));
-			}
-			*/
-		if(debug) {
-//			printf("%04x    %02x\n",_pc,GetValue(_pc));
-			}
-		/*if(kbhit()) {
-			getch();
-			printf("%04x    %02x\n",_pc,GetValue(_pc));
-			printf("281-284: %02x %02x %02x %02x\n",*(p1+0x281),*(p1+0x282),*(p1+0x283),*(p1+0x284));
-			printf("2b-2c: %02x %02x\n",*(p1+0x2b),*(p1+0x2c));
-			printf("33-34: %02x %02x\n",*(p1+0x33),*(p1+0x34));
-			printf("37-38: %02x %02x\n",*(p1+0x37),*(p1+0x38));
-			}*/
-		if(DoReset) {
+		if(CPUPins & DoReset) {
 			_pc=GetIntValue(0x0002);
 			_wp=GetIntValue(0x0000);
       _st.x=0;
 			IPL=0b0001;   // Ti99
-			DoReset=0;DoIdle=0;
-      keysFeedPtr=255; //meglio ;)
+			CPUPins &= ~(DoReset | DoIdle);
       initHW();
       continue;
 			}
-		if(DoLOAD) {
-			DoLOAD=0; DoIdle=0;
-//?? serve			IPL=0b1111;
+		if(CPUPins & DoLOAD) {
+			CPUPins &= ~(DoLOAD | DoIdle);
+//?? serve			IPL=0b1111);
 			_pc=GetIntValue(0xfffe);
 			_wp=GetIntValue(0xfffc);
 
       }
-		if(DoIRQ) {   // https://www.unige.ch/medecine/nouspikel/ti99/ints.htm
+		if(CPUPins & DoIRQ) {   // https://www.unige.ch/medecine/nouspikel/ti99/ints.htm
       
       // LED2^=1;    // 
-      DoIdle=0;     // 
+			CPUPins &= ~(DoIdle);
       
-			if(IPL <= _st.InterruptMask) {
+			if(IPL <= _st.InterruptMask) {		// TMS9900 will perform BLWP @>0000 through BLWP @>003C depending on the interrupt level. 
 //??				IPL = _st.InterruptMask;
-				DoIRQ=0;
+				CPUPins &= ~DoIRQ;
         i=_wp;
-    		_wp=GetIntValue(0x0000+IPL*2);
-        regs1->r[14].x=_pc;
-  			_pc=GetIntValue(0x0002+IPL*2);
-        regs1->r[13].x=i;
-        regs1->r[15].x=_st.x;
-       
+    		_wp=GetIntValue((uint16_t)(0x0000+IPL*4));
+		    regs=(union T_REGISTERS *)&ram_seg[_wp & 0xff /* -RAM_START */];     // così oppure cast diretto...
+        SET_REG(14,_pc);		// VERIFICARE!
+  			_pc=GetIntValue((uint16_t)(0x0002+IPL*4));
+        SET_REG(13,i);
+        SET_REG(15,_st.x);
+
 				}
 			}
 
   
-		if(DoIdle) {
+		if(CPUPins & DoIdle) {
       //mettere ritardino per analogia con le istruzioni?
 //      __delay_ns(500); non va più nulla... boh...
-			continue;		// esegue cmq IRQ e refresh
+			continue;		// esegue cmq IRQ 
       }
 
 //printf("Pipe1: %02x, Pipe2w: %04x, Pipe2b1: %02x,%02x\n",Pipe1,Pipe2.word,Pipe2.bytes.byte1,Pipe2.bytes.byte2);
@@ -234,21 +212,19 @@ extern BYTE TMS9918Reg[8],TMS9918RegS;
       if(!SW2) {        // test tastiera, me ne frego del repeat/rientro :)
        // continue;
         __delay_ms(100); ClrWdt();
-        DoReset=1;
-        }
-      if(!SW1) {        // test tastiera
-        if(keysFeedPtr==255)      // debounce...
-          keysFeedPtr=254;
+        CPUPins |= DoReset;
         }
 
-      LED2^=1;    // ~700nS 7/6/20, ~600 con 32bit 10/7/21 MA NON FUNZIONA/visualizza!! verificare; 5-700nS 27/10/22
-
+      LED2^=1;    // ~400nS (alcune 1000)  7/5/26
+		if(cyclesSoFar<cyclesCPU)		//
+			goto rallenta;
+		cyclesCPU += CPUClock;
     
 /*      if(_pc == 0x069d ab5 43c Cd3) {
         ClrWdt();
         }*/
 extern BYTE ram_seg[];
-    regs1=(union Z_REGISTERS *)&ram_seg[_wp & 0xff /* -RAM_START */];     // così oppure cast diretto...
+    regs=(union Z_REGISTERS*)&ram_seg[_wp & 0xff /* -RAM_START */];     // così oppure cast diretto...
   
 		GetPipe(_pc);
     _pc += 2;
@@ -258,65 +234,31 @@ execute:
 		switch(Pipe1 & 0b1111000000000000) {
       case 0b0000 << 12:
     		if(Pipe1 & 0b0000100000000000) {    // SLA SRA SRC SRL
-          if(!(Pipe1 & 0b0000000011110000)) { // count
-            res2.b.l=regs1->r[0].x >> 12;
-            if(!res2.b.l)
-              res2.b.l=16;
-            }
-          else {
-            res2.b.l=(Pipe1 & 0b0000000011110000) >> 4;
-            }
-          switch(workingTS) {
-            case REGISTER_DIRECT:
-              res1.x=WORKING_REG;
-              break;
-            case REGISTER_INDIRECT:
-              res1.x=GetIntValue(WORKING_REG);
-              break;
-            case REGISTER_SYMBOLIC_INDEXED:
-              if(workingRegIndex)
-                res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-              else
-                res1.x=GetIntValue(Pipe2.x);
-              break;
-            case REGISTER_INDIRECT_AUTOINCREMENT:
-              res1.x=GetIntValue(WORKING_REG);
-              WORKING_REG+=2;
-              break;
-            }
+          if(!(Pipe1 & 0b0000000011110000))  // count
+            res2.b.l=GET_REG(0) & 0xf;
+          else
+            res2.b.l=(uint8_t)(Pipe1 & 0b0000000011110000) >> 4;
+          if(!res2.b.l)
+            res2.b.l=16;
+          res1.x=GET_WORKING_REG_S();
         
           switch(Pipe1 & 0b1111111100000000) {
             case 0b00001010 << 8:     // SLA Shift left arithmetic
-              while(res2.b.l) {
+              res3.x=res1.x;
+              while(res2.b.l--) {
                 _st.Carry= res1.x & 0x8000 ? 1 : 0;
                 res1.x <<= 1;
+                if((res1.x & 0x8000) != (res3.x & 0x8000))
+									_st.Overflow=1;
                 res3.x=res1.x;
                 }
               
 aggRotate:
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  WORKING_REG=res3.x;
-                  break;
-                case REGISTER_INDIRECT:
-                  PutIntValue(WORKING_REG,res3.x);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    PutIntValue(WORKING_REG+(int16_t)Pipe2.x,res3.x);
-                  else
-                    PutIntValue(Pipe2.x,res3.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  PutIntValue(WORKING_REG,res3.x);
-                  WORKING_REG+=2;
-                  break;
-                }
-              goto aggFlag012;
+              SET_WORKING_REG_S(res3.x);
+              goto aggFlag16Z;
               break;
             case 0b00001000 << 8:     // SRA Shift right arithmetic
-              while(res2.b.l) {
+              while(res2.b.l--) {
                 _st.Carry=res1.x & 0x1;
                 res1.x >>= 1;
                 if(res1.x & 0x4000)
@@ -326,7 +268,8 @@ aggRotate:
               goto aggRotate;
               break;
             case 0b00001011 << 8:     // SRC Shift right circular
-              while(res2.b.l) {
+              res3.x=res1.x;
+              while(res2.b.l--) {
                 _st.Carry=res3.x & 1;
                 res1.x >>= 1;
                 if(_st.Carry)
@@ -336,7 +279,7 @@ aggRotate:
               goto aggRotate;
               break;
             case 0b00001001 << 8:     // SRL Shift right logical
-              while(res2.b.l) {
+              while(res2.b.l--) {
                 _st.Carry=res1.x & 0x1;
                 res1.x >>= 1;
                 res3.x=res1.x;
@@ -344,387 +287,151 @@ aggRotate:
               goto aggRotate;
               break;
             }
-          }
+          }		// SLA ecc
         else {
           switch(Pipe1 & 0b1111111111000000) {
-            case 0b0000001000 << 6:     // AI ANDI CI LI ORI
+            case 0b0000001000 << 6:     // AI LI 
               switch(Pipe1 & 0b1111111111100000) {
                 case 0b00000010001 << 5:     // AI Add immediate
-                  res1.x=WORKING_REG;
-                  res2.x=Pipe2.x;
-                  res3.x=(uint32_t)res1.x+(uint32_t)res2.x;
-                  
-                  WORKING_REG=res3.x;
-
+                  res2.x=GET_WORKING_REG_S();
+                  res1.x=Pipe2.x;
+                  res3.x=res1.x+res2.x;
+                  SET_WORKING_REG_S(res3.x);
 									_pc+=2;
                   
-aggFlag34A:
-                  _st.Carry=!!HIWORD(res3.d);
-                  _st.Overflow = !!(((res1.x & 0x8000) == (res2.x & 0x8000)) && ((res3.x & 0x8000) != (res2.x & 0x8000)));
-									goto aggFlag012;
-                  break;
-                case 0b00000010010 << 5:     // ANDI AND immediate
-                  res1.x=WORKING_REG;
-                  res2.x=Pipe2.x;
-                  res3.x=res1.x & res2.x;
-									_pc+=2;
-
-aggFlag012:
-                  _st.LogicalGreater=!!(res3.x != 0);
-                  _st.ArithmeticGreater=!!(res3.x != 0 && !(res3.x & 0x8000));
-                  _st.Zero=res3.x ? 0 : 1;
-                  break;
-                case 0b00000010100 << 5:     // CI Compare immediate
-                  res1.x=WORKING_REG;
-                  res2.x=Pipe2.x;
-                  res3.x=(uint32_t)res1.x-(uint32_t)res2.x;
-									_pc+=2;
-        
-compare:        
-                  _st.LogicalGreater=!!(((res1.x & 0x8000) && !(res2.x & 0x8000))
-                    || (((res1.x & 0x8000) == (res2.x & 0x8000)) && !(res3.x & 0x8000)));
-                  _st.ArithmeticGreater=!!((!(res1.x & 0x8000) && (res2.x & 0x8000))
-                    || (((res1.x & 0x8000) == (res2.x & 0x8000)) && !(res3.x & 0x8000)));
-                  _st.Zero=res3.x ? 0 : 1;
+aggFlag16A:
+                  _st.Carry=CARRY_ADD_16();
+                  _st.Overflow = OVF_ADD_16();
+									goto aggFlag16Z;
                   break;
                 case 0b00000010000 << 5:     // LI Load immediate
-                  WORKING_REG=Pipe2.x;
-                  res3.x=WORKING_REG;
+                  res3.x=Pipe2.x;
+									SET_WORKING_REG_S(res3.x);
 									_pc+=2;
-                  goto aggFlag012;
+                  goto aggFlag16Z;
+                  break;
+                }
+              break;
+              
+            case 0b0000001001 << 6:     // ANDI ORI
+              switch(Pipe1 & 0b1111111111100000) {
+                case 0b00000010010 << 5:     // ANDI AND immediate
+                  res1.x=GET_WORKING_REG_S();
+                  res2.x=Pipe2.x;
+                  res3.x=res1.x & res2.x;
+                  SET_WORKING_REG_S(res3.x);
+									_pc+=2;
+
+aggFlag16Z:
+                  _st.LogicalGreater=res3.x>0 ? 1 : 0;
+                  _st.ArithmeticGreater=((int16_t)res3.x)>((int16_t)0) ? 1 : 0;
+                  _st.Zero=res3.x ? 0 : 1;
                   break;
                 case 0b00000010011 << 5:     // ORI OR immediate
-                  res1.x=WORKING_REG;
+                  res1.x=GET_WORKING_REG_S();
                   res2.x=Pipe2.x;
                   res3.x=res1.x | res2.x;
+                  SET_WORKING_REG_S(res3.x);
 									_pc+=2;
-                  goto aggFlag012;
+                  goto aggFlag16Z;
                   break;
                 }
               break;
               
             case 0b0000010001 << 6:     // B Branch
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res3.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res3.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res3.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res3.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res3.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
+							COMPUTE_SOURCE_BRANCH
               _pc=res3.x;
               break;
             case 0b0000011010 << 6:     // BL Branch and Link
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res3.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res3.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res3.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res3.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res3.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
-              regs1->r[14].x=_pc;
+							COMPUTE_SOURCE_BRANCH
+              SET_REG(11,_pc);
               _pc=res3.x;
               break;
             case 0b0000010000 << 6:     // BLWP Branch and Load Workspace Pointer
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res3.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res3.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res3.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res3.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res3.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
+							COMPUTE_SOURCE_BRANCH
               i=_wp;
-          		_wp=GetIntValue(0x0000+res3.x);
-              regs1->r[14].x=_pc;
-            	_pc=GetIntValue(0x0002+res3.x);
-              regs1->r[13].x=i;
-              regs1->r[15].x=_st.x;
+          		_wp=GetIntValue((uint16_t)(0x0000+res3.x));
+						  regs=(union T_REGISTERS *)&ram_seg[_wp & 0xff /* -RAM_START */];     // così oppure cast diretto...
+              SET_REG(14,_pc);
+            	_pc=GetIntValue((uint16_t)(0x0002+res3.x));
+              SET_REG(13,i);
+              SET_REG(15,_st.x);
               // saltare interrupt dopo di questa, dice...
               break;
             case 0b0000010011 << 6:     // CLR Clear Operand
               res3.x=0;
               
-store16_2:              
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  WORKING_REG=res3.x;
-                  break;
-                case REGISTER_INDIRECT:
-                  PutIntValue(WORKING_REG,res3.x);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    PutIntValue(WORKING_REG+(int16_t)Pipe2.x,res3.x);
-                  else
-                    PutIntValue(Pipe2.x,res3.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  PutIntValue(WORKING_REG,res3.x);
-                  WORKING_REG2+=2;
-                  break;
-                }
-            	goto aggFlag012;
+store16_S_noF:
+							STORE_SOURCE_16
               break;
             case 0b0000011100 << 6:     // SETO Set To Ones
               res3.x=0xffff;
-              goto store16_2;
+              goto store16_S_noF;
               break;
             case 0b0000010101 << 6:     // INV Invert
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res1.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res1.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
+							COMPUTE_SOURCE_NOPIPE(1);
               res3.x=~res1.x;
-              goto store16_2;
-              
-              
+
+store16_S:
+							STORE_SOURCE_16
+            	goto aggFlag16Z;
               break;
             case 0b0000010100 << 6:     // NEG Negate
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res2.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res2.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res2.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res2.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res2.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
+							COMPUTE_SOURCE_NOPC_NOINC(2);
               res1.x=0;
               res3.x=res1.x-res2.x;
-              goto store16_2;
-              
+							_st.Carry=CARRY_SUB_16();
+			        _st.Overflow = OVF_SUB_16();
+              goto store16_S;
               break;
             case 0b0000011101 << 6:     // ABS Absolute Value
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res1.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res1.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
-              res3.x=abs(res3.x);
-              goto store16_2;
+							COMPUTE_SOURCE_NOPC_NOINC(2);
+              res3.x=abs(res2.x);
+							STORE_SOURCE_16
+              res3.x=res2.x;							//flag van controllati PRIMA!!! 
+            	goto aggFlag16Z;
               break;
             case 0b0000011011 << 6:     // SWPB Swap Bytes
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res1.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res1.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
-              res3.x=MAKEWORD(HIBYTE(res1.x),LOBYTE(res1.x));
-              goto store16_2;
+							COMPUTE_SOURCE_NOPC_NOINC(2);
+              res3.x=MAKEWORD(HIBYTE(res2.x),LOBYTE(res2.x));
+              goto store16_S_noF;
               break;
             case 0b0000010110 << 6:     // INC Increment
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res1.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res1.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
-              res3.x=res1.x;
-              res3.x++;
-              
-aggInc:
+							COMPUTE_SOURCE_NOPC_NOINC(1);
+              res3.x=res1.x+1;
+//              _st.Carry= res3.x & 0x10 ? 1 : 0;		// v. ti99sim
+              _st.Carry= res3.x < 1 ? 1 : 0;		// v. classic99
+//					  _st.Overflow= (x3==0x8000) ? 1 : 0;
               _st.Overflow= !!(!(res1.x & 0x8000) && (res3.x & 0x8000));
-              _st.Carry=!!HIWORD(res1.x);
-              goto store16_2;
+              goto store16_S;
               break;
             case 0b0000010111 << 6:     // INCT Increment by Two
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res1.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res1.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
-              res3.x=res1.x;
-              res3.x+=2;
-              goto aggInc;
+							COMPUTE_SOURCE_NOPC_NOINC(1);
+              res3.x=res1.x+2;
+              _st.Carry= res3.x < 2 ? 1 : 0;		// v. classic99
+//					  _st.Overflow= ((x3==0x8000)||(x3==0x8001)) ? 1 : 0;
+              _st.Overflow= !!(!(res1.x & 0x8000) && (res3.x & 0x8000));
+              goto store16_S;
               break;
             case 0b0000011000 << 6:     // DEC Decrement
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res1.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res1.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
-              res3.x=res1.x;
-              res3.x--;
-aggDec:
+							COMPUTE_SOURCE_NOPC_NOINC(1);
+              res3.x=res1.x-1;
+//              _st.Carry= res3.x & 0x10 ? 0 : 1;		// v. ti99sim
+              _st.Carry= res3.x != 0xffff ? 1 : 0;		// v. classic99
               _st.Overflow= !!((res1.x & 0x8000) && !(res3.x & 0x8000));
-              _st.Carry=!!HIWORD(res1.x);
-              goto store16_2;
+              goto store16_S;
               break;
             case 0b0000011001 << 6:     // DECT Decrement by Two
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res1.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res1.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res1.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
-              res3.x=res1.x;
-              res3.x-=2;
-              goto aggDec;
+							COMPUTE_SOURCE_NOPC_NOINC(1);
+              res3.x=res1.x-2;
+//              _st.Carry= res3.x & 0x10 ? 0 : 1;		// v. ti99sim
+              _st.Carry= res3.x < 0xfffe ? 1 : 0;		// v. classic99
+              _st.Overflow= !!((res1.x & 0x8000) && !(res3.x & 0x8000));
+              goto store16_S;
               break;
             case 0b0000010010 << 6:     // X Execute
-              switch(workingTS) {
-                case REGISTER_DIRECT:
-                  res3.x=WORKING_REG;
-                  break;
-                case REGISTER_INDIRECT:
-                  res3.x=GetIntValue(WORKING_REG);
-                  break;
-                case REGISTER_SYMBOLIC_INDEXED:
-                  if(workingRegIndex)
-                    res3.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-                  else
-                    res3.x=GetIntValue(Pipe2.x);
-                  _pc+=2;
-                  break;
-                case REGISTER_INDIRECT_AUTOINCREMENT:
-                  res3.x=GetIntValue(WORKING_REG);
-                  WORKING_REG+=2;
-                  break;
-                }
-              Pipe1=res3.x;
+							COMPUTE_SOURCE_NOPIPE(1);
+              Pipe1=res1.x;
               goto execute;
               break;
               
@@ -736,14 +443,14 @@ aggDec:
                   break;
                   
                 case 0b00000010110 << 5:     // STST Store status register
-                  WORKING_REG=_st.x;
+                  SET_WORKING_REG_S(_st.x);
                   break;
                 }
               break;
             case 0b0000001100 << 6:     // LWPI LIMI
               switch(Pipe1 & 0b1111111111100000) {
                 case 0b00000011000 << 5:     // LIMI Load interrupt mask
-                  _st.x=(_st.x & 0b0000111111111111) | (Pipe2.x & 0b1111000000000000);
+                  _st.InterruptMask=Pipe2.x & 0b00001111;
                   _pc+=2;
                   break;
                 }
@@ -751,7 +458,17 @@ aggDec:
             case 0b0000001010 << 6:     // STWP
               switch(Pipe1 & 0b1111111111100000) {
                 case 0b00000010101 << 5:     // STWP Store workspace pointer
-                  WORKING_REG=_wp;
+                  SET_WORKING_REG_S(_wp);
+                  break;
+                case 0b00000010100 << 5:     // CI Compare immediate
+                  res1.x=GET_WORKING_REG_S();
+                  res2.x=Pipe2.x;
+									_pc+=2;
+        
+compare16:
+                  _st.LogicalGreater=res1.x>res2.x ? 1 : 0;
+                  _st.ArithmeticGreater=((int16_t)res1.x)>((int16_t)res2.x) ? 1 : 0;
+                  _st.Zero=res1.x==res2.x ? 1 : 0;
                   break;
                 }
               break;
@@ -759,9 +476,9 @@ aggDec:
             case 0b0000001110 << 6:     // RTWP
               switch(Pipe1 & 0b1111111111100000) {
                 case 0b00000011100 << 5:     // RTWP Return workspace pointer
-                  _st.x=regs1->r[15].x;
-                  _pc=regs1->r[14].x;
-                  _wp=regs1->r[13].x;
+                  _st.x=GET_REG(15);
+                  _pc=GET_REG(14);
+                  _wp=GET_REG(13);
                   break;
                 }
               break;
@@ -769,10 +486,10 @@ aggDec:
             case 0b0000001101 << 6:     // IDLE
               switch(Pipe1 & 0b1111111111100000) {
                 case 0b00000011010 << 5:     // IDLE
-          			  DoIdle=1;
+          			  CPUPins |= DoIdle;
                   break;
                 case 0b00000011011 << 5:     // RSET
-                  _st.x &= 0b0000111111111111;
+                  _st.InterruptMask = 0;
                   break;
                 }
               break;
@@ -792,194 +509,102 @@ aggDec:
         break;
       
       case 0b0001 << 12:
-    		switch(Pipe1 & 0b1111111100000000) {
-          case 0b00010011 << 8:     // JEQ Jump equal
-            if(_st.Zero)
-              goto Jump;
-            break;
-          case 0b00010101 << 8:     // JGT Jump greater than
-            if(_st.ArithmeticGreater)
-              goto Jump;
-            break;
-          case 0b00011011 << 8:     // JH Jump high
+    		switch(Pipe1 & 0b111100000000) {
+          case 0b1011 << 8:     // JH Jump high
             if(_st.LogicalGreater && !_st.Zero)
               goto Jump;
             break;
-          case 0b00010100 << 8:     // JHE Jump high or equal
-            if(_st.LogicalGreater || _st.Zero)
-              goto Jump;
-            break;
-          case 0b00011010 << 8:     // JL Jump low
+          case 0b1010 << 8:     // JL Jump low
             if(!_st.LogicalGreater && !_st.Zero)
               goto Jump;
             break;
-          case 0b00010010 << 8:     // JLE Jump low or equal
+          case 0b0100 << 8:     // JHE Jump high or equal
+            if(_st.LogicalGreater || _st.Zero)
+              goto Jump;
+            break;
+          case 0b0010 << 8:     // JLE Jump low or equal
             if(!_st.LogicalGreater || _st.Zero)
               goto Jump;
             break;
-          case 0b00010001 << 8:     // JLT Jump less than
+          case 0b0101 << 8:     // JGT Jump greater than
+            if(_st.ArithmeticGreater)
+              goto Jump;
+            break;
+          case 0b0001 << 8:     // JLT Jump less than
             if(!_st.ArithmeticGreater && !_st.Zero)
               goto Jump;
             break;
-          case 0b00010000 << 8:     // JMP Jump unconditional
-Jump:
-    				_pc += (int8_t)LOBYTE(Pipe1) *2;
-            break;
-          case 0b00010111 << 8:     // JNC Jump no carry
-            if(!_st.Carry)
+          case 0b0011 << 8:     // JEQ Jump equal
+            if(_st.Zero)
               goto Jump;
             break;
-          case 0b00010110 << 8:     // JNE Jump not equal
+          case 0b0110 << 8:     // JNE Jump not equal
             if(!_st.Zero)
               goto Jump;
             break;
-          case 0b00011001 << 8:     // JNO Jump no overflow
-            if(!_st.Overflow)
-              goto Jump;
-            break;
-          case 0b00011000 << 8:     // JOC Jump carry
+          case 0b1000 << 8:     // JOC Jump carry
             if(_st.Carry)
               goto Jump;
             break;
-          case 0b00011100 << 8:     // JOP Jump odd parity
+          case 0b0111 << 8:     // JNC Jump no carry
+            if(!_st.Carry)
+              goto Jump;
+            break;
+          case 0b1001 << 8:     // JNO Jump no overflow
+            if(!_st.Overflow)
+              goto Jump;
+            break;
+          case 0b1100 << 8:     // JOP Jump odd parity
             if(_st.Parity)
               goto Jump;
+            break;
+          case 0b0000 << 8:     // JMP Jump unconditional  (se 0x1000 vale come NOP !
+Jump:
+    				_pc += (int8_t)LOBYTE(Pipe1) *2;
+            break;
+
+               // SBO SBZ TB (CRU operations)
+          case 0b1101 << 8:     // SBO Set bit to one
+		        res3.x=GetValueCRU((uint16_t)(GET_REG(12)+LOBYTE(Pipe1)/8),1);
+		        PutValueCRU((uint16_t)(GET_REG(12)+LOBYTE(Pipe1)/8),res3.x,1);
+            break;
+          case 0b1110 << 8:     // SBZ Set bit to zero
+		        res3.x=GetValueCRU((uint16_t)(GET_REG(12)+LOBYTE(Pipe1)/8),1);
+		        PutValueCRU((uint16_t)(GET_REG(12)+LOBYTE(Pipe1)/8),res3.x,1);
+            break;
+          case 0b1111 << 8:     // TB Test bit 
+		        res3.x=GetValueCRU((uint16_t)(GET_REG(12)+LOBYTE(Pipe1)/8),1);
+						if(res3.x)
+							_st.Zero=1;			// occhio invertito
+						else
+							_st.Zero=0;
             break;
           }
         break;
         
       case 0b1010 << 12:    // A Add
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.x=WORKING_REG;
-            break;
-          case REGISTER_INDIRECT:
-            res1.x=GetIntValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.x=GetIntValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.x=GetIntValue(WORKING_REG);
-            WORKING_REG+=2;
-            break;
-          }
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            res2.x=WORKING_REG2;
-            break;
-          case REGISTER_INDIRECT:
-            res2.x=GetIntValue(WORKING_REG2);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              res2.x=GetIntValue(WORKING_REG2+(int16_t)Pipe2.x);
-            else
-              res2.x=GetIntValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res2.x=GetIntValue(WORKING_REG2);
-            break;
-          }
-        res3.d=(uint32_t)res1.x+(uint32_t)res2.x;
-        
-store16:
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            WORKING_REG2=res3.x;
-            break;
-          case REGISTER_INDIRECT:
-            PutIntValue(WORKING_REG2,res3.x);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              PutIntValue(WORKING_REG2+(int16_t)Pipe2.x,res3.x);
-            else
-              PutIntValue(Pipe2.x,res3.x);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            PutIntValue(WORKING_REG2,res3.x);
-            WORKING_REG2+=2;
-            break;
-          }
-        goto aggFlag34A;
+				COMPUTE_SOURCE_PIPE(2); 
+				COMPUTE_SOURCE2_NOPC_NOINC(1);
+        res3.x=res1.x+res2.x;
+				STORE_DEST_16
+        goto aggFlag16A;
         break;
       case 0b1011 << 12:    // AB Add bytes
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.b.l=LOBYTE(WORKING_REG);
-            break;
-          case REGISTER_INDIRECT:
-            res1.b.l=GetValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.b.l=GetValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.b.l=GetValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.b.l=GetValue(WORKING_REG);
-            WORKING_REG++;
-            break;
-          }
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            res2.b.l=LOBYTE(WORKING_REG2);
-            break;
-          case REGISTER_INDIRECT:
-            res2.b.l=GetValue(WORKING_REG2);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              res2.b.l=GetValue(WORKING_REG2+(int16_t)Pipe2.x);
-            else
-              res2.b.l=GetValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res2.b.l=GetValue(WORKING_REG2);
-            WORKING_REG2++;
-            break;
-          }
-        res3.x=(uint16_t)res1.b.l+(uint16_t)res2.b.l;
+				COMPUTE_SOURCE8_PIPE(2);
+				COMPUTE_SOURCE82_NOPC_NOINC(1)
+        res3.b.l=res1.b.l+res2.b.l;
         
 //        _st.Overflow = !!(((res1.b.l & 0x40) + (res2.b.l & 0x40)) & 0x80) != !!(((res1.x & 0x80) + (res2.x & 0x80)) & 0x100);
-        _st.Overflow = !!(((res1.b.h & 0x80) == (res2.b.h & 0x80)) && ((res3.b.h & 0x80) != (res2.b.h & 0x80)));
-          
-store8:
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            WORKING_REG2=MAKEWORD(res3.b.l,HIBYTE(WORKING_REG2));
-            break;
-          case REGISTER_INDIRECT:
-            PutValue(WORKING_REG2,res3.b.l);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              PutValue(WORKING_REG2+(int16_t)Pipe2.x,res3.b.l);
-            else
-              PutValue(Pipe2.x,res3.b.l);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            PutValue(WORKING_REG2,res3.b.l);
-            WORKING_REG2+=2;
-            break;
-          }
-        
-        _st.Carry=!!res3.b.h;
-        
-aggFlag012_8:
-        _st.LogicalGreater=!!(res3.b.l != 0);
-        _st.ArithmeticGreater=!!(res3.b.l != 0 && !(res3.b.l & 0x8000));
+//        _st.Overflow = !!(((res1.b.h & 0x80) == (res2.b.h & 0x80)) && ((res3.b.h & 0x80) != (res2.b.h & 0x80)));
+        _st.Overflow = OVF_ADD_8();
+        _st.Carry=CARRY_ADD_8();
+
+store8_D:
+				STORE_DEST_8
+      
+aggFlag8Z:
+        _st.LogicalGreater=res3.b.l>0 ? 1 : 0;
+        _st.ArithmeticGreater=((int8_t)res3.b.l)>((int8_t)0) ? 1 : 0;
         _st.Zero=res3.b.l ? 0 : 1;
 
 calcParity:
@@ -991,510 +616,133 @@ calcParity:
         par ^= res3.b.l;
         res3.b.l= par >> 4;
         par ^= res3.b.l;
-        _st.Parity=par & 1 ? 0 : 1;   // ODD
+        _st.Parity=par & 1 ? 1 : 0;   // ODD
         }
         break;
 
       case 0b1000 << 12:    // C Compare
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.x=WORKING_REG;
-            break;
-          case REGISTER_INDIRECT:
-            res1.x=GetIntValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.x=GetIntValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.x=GetIntValue(WORKING_REG);
-            WORKING_REG+=2;
-            break;
-          }
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            res2.x=WORKING_REG2;
-            break;
-          case REGISTER_INDIRECT:
-            res2.x=GetIntValue(WORKING_REG2);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              res2.x=GetIntValue(WORKING_REG2+(int16_t)Pipe2.x);
-            else
-              res2.x=GetIntValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res2.x=GetIntValue(WORKING_REG2);
-            break;
-          }
-        res3.d=(uint32_t)res1.x-(uint32_t)res2.x;
-        
-        goto compare;
+				COMPUTE_SOURCE_PIPE(1);
+				COMPUTE_SOURCE2
+        goto compare16;
         break;
       case 0b1001 << 12:    // CB Compare bytes
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.b.l=LOBYTE(WORKING_REG);
-            break;
-          case REGISTER_INDIRECT:
-            res1.b.l=GetValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.b.l=GetValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.b.l=GetValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.b.l=GetValue(WORKING_REG);
-            WORKING_REG++;
-            break;
-          }
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            res2.b.l=LOBYTE(WORKING_REG);
-            break;
-          case REGISTER_INDIRECT:
-            res2.b.l=GetValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res2.b.l=GetValue(WORKING_REG2+(int16_t)Pipe2.x);
-            else
-              res2.b.l=GetValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res2.b.l=GetValue(WORKING_REG2);
-            WORKING_REG2++;
-            break;
-          }
-        res3.x=(uint16_t)res1.b.l-(uint16_t)res2.b.l;
-        
-        _st.LogicalGreater=!!(((res1.b.l & 0x80) && !(res2.b.l & 0x80))
-          || (((res1.b.l & 0x80) == (res2.b.l & 0x80)) && !(res3.b.l & 0x80)));
-        _st.ArithmeticGreater=!!((!(res1.b.l & 0x80) && (res2.b.l & 0x80))
-          || (((res1.b.l & 0x80) == (res2.b.l & 0x80)) && !(res3.b.l & 0x80)));
-        _st.Zero=res3.b.l ? 0 : 1;
+				COMPUTE_SOURCE8_PIPE(1);
+				COMPUTE_SOURCE82(2)
+				res3.b.l=res1.b.l;
+        _st.LogicalGreater=res1.b.l>res2.b.l ? 1 : 0;
+        _st.ArithmeticGreater=((int8_t)res1.b.l)>((int8_t)res2.b.l) ? 1 : 0;
+        _st.Zero=res1.b.l == res2.b.l ? 1 : 0;
+				goto calcParity;
         break;
 
       case 0b0110 << 12:    // S Subtract
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.x=WORKING_REG;
-            break;
-          case REGISTER_INDIRECT:
-            res1.x=GetIntValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.x=GetIntValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.x=GetIntValue(WORKING_REG);
-            WORKING_REG+=2;
-            break;
-          }
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            res2.x=WORKING_REG2;
-            break;
-          case REGISTER_INDIRECT:
-            res2.x=GetIntValue(WORKING_REG2);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res2.x=GetIntValue(WORKING_REG2+(int16_t)Pipe2.x);
-            else
-              res2.x=GetIntValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res2.x=GetIntValue(WORKING_REG2);
-            break;
-          }
-        res3.d=(uint32_t)res1.x-(uint32_t)res2.x;
+				COMPUTE_SOURCE_PIPE(2); 
+				COMPUTE_SOURCE2_NOPC_NOINC(1);
+        res3.x=res1.x-res2.x;
         
-aggFlag34S:
-        _st.Carry=!!HIWORD(res3.d);
+        _st.Carry=CARRY_SUB_16();
 //        _st.Overflow = !!(((res1.x & 0x4000) + (res2.x & 0x4000)) & 0x8000) != !!(((res1.d & 0x8000) + (res2.d & 0x8000)) & 0x10000);
-        _st.Overflow = !!(((res1.x & 0x8000) != (res2.x & 0x8000)) && ((res3.x & 0x8000) != (res2.x & 0x8000)));
-        goto store16;
+//        _st.Overflow = !!(((res1.x & 0x8000) != (res2.x & 0x8000)) && ((res3.x & 0x8000) != (res2.x & 0x8000)));
+        _st.Overflow = OVF_SUB_16();
+				STORE_DEST_16
+        goto aggFlag16Z;
         break;
-      case 0b0111 << 12:    // SB Subtract bytes
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.b.l=LOBYTE(WORKING_REG);
-            break;
-          case REGISTER_INDIRECT:
-            res1.b.l=GetValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.b.l=GetValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.b.l=GetValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.b.l=GetValue(WORKING_REG);
-            WORKING_REG++;
-            break;
-          }
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            res2.b.l=LOBYTE(WORKING_REG2);
-            break;
-          case REGISTER_INDIRECT:
-            res2.b.l=GetValue(WORKING_REG2);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              res2.b.l=GetValue(WORKING_REG2+(int16_t)Pipe2.x);
-            else
-              res2.b.l=GetValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.b.l=GetValue(WORKING_REG2);
-            WORKING_REG2++;
-            break;
-          }
-        res3.x=(uint16_t)res1.b.l-(uint16_t)res2.b.l;
-        _st.Overflow = !!(((res1.b.h & 0x80) != (res2.b.h & 0x80)) && ((res3.b.h & 0x80) != (res2.b.h & 0x80)));
-        goto store8;
+      case 0b0111 << 12:    // SB Subtract bytes  OPERANDI INVERTITI ;) anche in Add, mentre Compare è dritta!
+				COMPUTE_SOURCE8_PIPE(2);
+				COMPUTE_SOURCE82_NOPC_NOINC(1)
+        res3.b.l=res1.b.l-res2.b.l;
+        _st.Carry=CARRY_SUB_8();
+//        _st.Overflow = !!(((res1.b.h & 0x80) != (res2.b.h & 0x80)) && ((res3.b.h & 0x80) != (res2.b.h & 0x80)));
+        _st.Overflow = OVF_SUB_8();
+        goto store8_D;
         break;
       
       case 0b1110 << 12:    // SOC Set ones corresponding
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.x=WORKING_REG;
-            break;
-          case REGISTER_INDIRECT:
-            res1.x=GetIntValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.x=GetIntValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.x=GetIntValue(WORKING_REG);
-            WORKING_REG+=2;
-            break;
-          }
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            res2.x=WORKING_REG2;
-            break;
-          case REGISTER_INDIRECT:
-            res2.x=GetIntValue(WORKING_REG2);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              res2.x=GetIntValue(WORKING_REG2+(int16_t)Pipe2.x);
-            else
-              res2.x=GetIntValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res2.x=GetIntValue(WORKING_REG2);
-            break;
-          }
+				COMPUTE_SOURCE_PIPE(1); 
+				COMPUTE_SOURCE2_NOINC(2);
         res3.x=res2.x | res1.x;
         
-store16_012:
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            WORKING_REG2=res3.x;
-            break;
-          case REGISTER_INDIRECT:
-            PutIntValue(WORKING_REG2,res3.x);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              PutIntValue(WORKING_REG2+(int16_t)Pipe2.x,res3.x);
-            else
-              PutIntValue(Pipe2.x,res3.x);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            PutIntValue(WORKING_REG2,res3.x);
-            WORKING_REG2+=2;
-            break;
-          }
-        goto aggFlag012;
+store16_D:
+				STORE_DEST_16
+        goto aggFlag16Z;
         break;
       case 0b1111 << 12:    // SOCB Set ones corresponding bytes  
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.b.l=LOBYTE(WORKING_REG);
-            break;
-          case REGISTER_INDIRECT:
-            res1.b.l=GetValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.b.l=GetValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.b.l=GetValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.b.l=GetValue(WORKING_REG);
-            WORKING_REG++;
-            break;
-          }
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            res2.b.l=LOBYTE(WORKING_REG2);
-            break;
-          case REGISTER_INDIRECT:
-            res2.b.l=GetValue(WORKING_REG2);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              res2.b.l=GetValue(WORKING_REG2+(int16_t)Pipe2.x);
-            else
-              res2.b.l=GetValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res2.b.l=GetValue(WORKING_REG2);
-            WORKING_REG2++;
-            break;
-          }
+				COMPUTE_SOURCE8_PIPE(1);
+				COMPUTE_SOURCE82_NOPC_NOINC(2)
         res3.b.l=res2.b.l | res1.b.l;
-        
-store8_012:
-        goto aggFlag012_8;
+        goto store8_D;
         break;
       
       case 0b0100 << 12:    // SZC Set zeros corresponding
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.x=WORKING_REG;
-            break;
-          case REGISTER_INDIRECT:
-            res1.x=GetIntValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.x=GetIntValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.x=GetIntValue(WORKING_REG);
-            WORKING_REG+=2;
-            break;
-          }
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            res2.x=WORKING_REG2;
-            break;
-          case REGISTER_INDIRECT:
-            res2.x=GetIntValue(WORKING_REG2);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              res2.x=GetIntValue(WORKING_REG2+(int16_t)Pipe2.x);
-            else
-              res2.x=GetIntValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res2.x=GetIntValue(WORKING_REG2);
-            break;
-          }
+				COMPUTE_SOURCE_PIPE(1);
+				COMPUTE_SOURCE2_NOINC(2);
         res3.x=res2.x & ~res1.x;
-        
-        goto store16_012;
+        goto store16_D;
         break;
-      case 0b0101 << 12:    // SZCB Set zeros corresponding bytes  
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.b.l=LOBYTE(WORKING_REG);
-            break;
-          case REGISTER_INDIRECT:
-            res1.b.l=GetValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.b.l=GetValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.b.l=GetValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.b.l=GetValue(WORKING_REG);
-            WORKING_REG++;
-            break;
-          }
-        switch(workingTD) {
-          case REGISTER_DIRECT:
-            res2.b.l=LOBYTE(WORKING_REG2);
-            break;
-          case REGISTER_INDIRECT:
-            res2.b.l=GetValue(WORKING_REG2);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingReg2Index)
-              res2.b.l=GetValue(WORKING_REG2+(int16_t)Pipe2.x);
-            else
-              res2.b.l=GetValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res2.b.l=GetValue(WORKING_REG2);
-            WORKING_REG2++;
-            break;
-          }
+      case 0b0101 << 12:    // SZCB Set zeros corresponding byte
+				COMPUTE_SOURCE8_PIPE(1);
+				COMPUTE_SOURCE82_NOPC_NOINC(2)
         res3.b.l=res2.b.l & ~res1.b.l;
-        
-        goto store8_012;
+        goto store8_D;
         break;
       
       case 0b1100 << 12:    // MOV Move
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.x=WORKING_REG;
-            break;
-          case REGISTER_INDIRECT:
-            res1.x=GetIntValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.x=GetIntValue(Pipe2.x);
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.x=GetIntValue(WORKING_REG);
-            WORKING_REG+=2;
-            break;
-          }
+				COMPUTE_SOURCE_PIPE(1);
         res3.x=res1.x;
-        
-        goto store16_012;
+        goto store16_D;
         break;
       case 0b1101 << 12:    // MOVB Move bytes  
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.b.l=LOBYTE(WORKING_REG);
-            break;
-          case REGISTER_INDIRECT:
-            res1.b.l=GetValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.b.l=GetValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.b.l=GetValue(Pipe2.x);
-            GetPipe(_pc);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.b.l=GetValue(WORKING_REG);
-            WORKING_REG++;
-            break;
-          }
+				COMPUTE_SOURCE8_PIPE(1);
         res3.b.l=res1.b.l;
-        
-        goto store8;
+        goto store8_D;
         break;
       
-      
       case 0b0010 << 12:    // Compare Ones, Compare Zeros, Exclusive OR
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.x=WORKING_REG;
-            break;
-          case REGISTER_INDIRECT:
-            res1.x=GetIntValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.x=GetIntValue(Pipe2.x);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.x=GetIntValue(WORKING_REG);
-            WORKING_REG+=2;
-            break;
-          }
+				COMPUTE_SOURCE_NOPIPE(1);
     		switch(Pipe1 & 0b1111110000000000) {
           case 0b001000 << 10:     // COC Compare Ones corresponding
-            if((res1.x & WORKING_REG) == res1.x)
+            if((res1.x & GET_WORKING_REG_D()) == res1.x)
               _st.Zero=1;
+						else
+              _st.Zero=0;
             break;
           case 0b001001 << 10:     // CZC Compare Zeros corresponding
-            if((~res1.x & ~WORKING_REG) == ~res1.x)
+            if((res1.x & GET_WORKING_REG_D()) == 0 /*res1.x*/)
               _st.Zero=1;
+						else
+              _st.Zero=0;
             break;
           case 0b001010 << 10:     // XOR Exclusive OR
+            res2.x=GET_WORKING_REG_D();
             res3.x = res1.x ^ res2.x;
-            WORKING_REG2=res3.x;
-            goto aggFlag012;
+            SET_WORKING_REG_D(res3.x);
+            goto aggFlag16Z;
             break;
           case 0b001011 << 10:     // XOP Extended Operation
 #ifdef TMS9940 
         		switch(Pipe1 & 0b0000001111000000) {
-              case 0b0000 << 6:   // DCA      verificare!!
+              case 0b0000) << 6:   // DCA      verificare!!
                 res3.b.l=res1.b.l;
                 i=_st.Carry;
                 _st.Carry=0;
-                if((_res1.b.l & 0xf) > 9 || _st.DigitCarry) {
+                if((res1.b.l & 0xf) > 9 || _st.DigitCarry) {
                   res3.x+=6;
                   res1.b.l=res3.b.l;
                   _st.Carry= i || res3.b.h;
                   _st.DigitCarry=1;
                   }
                 else
-                  _f.HalfCarry=0;
+                  _st.DigitCarry=0;
                 if((res1.b.l>0x99) || i) {
                   res3.b.l+=0x60;  
                   _st.Carry=1;
                   }
                 else
                   _st.Carry=0;
-                switch(workingTD) {
-                  case REGISTER_DIRECT:
-                    WORKING_REG2=MAKEWORD(res3.b.l,HIBYTE(WORKING_REG2));
-                    break;
-                  case REGISTER_INDIRECT:
-                    PutValue(WORKING_REG2,res3.b.l);
-                    break;
-                  case REGISTER_SYMBOLIC_INDEXED:
-                    if(workingReg2Index)
-                      PutValue(WORKING_REG2+(int16_t)Pipe2.x,res3.b.l);
-                    else
-                      PutValue(Pipe2.x,res3.b.l);
-                    _pc+=2;
-                    break;
-                  case REGISTER_INDIRECT_AUTOINCREMENT:
-                    PutValue(WORKING_REG2,res3.b.l);
-                    WORKING_REG2+=2;
-                    break;
-                  }
 store_dca:
-                _st.LogicalGreater=!!(res3.b.l != 0);
-                _st.ArithmeticGreater=!!(res3.b.l != 0 && !(res3.b.l & 0x8000));
+								STORE_DEST_8
+								_st.LogicalGreater=res3.b.l>0 ? 1 : 0;
+								_st.ArithmeticGreater=((int8_t)res3.b.l)>((int8_t)0) ? 1 : 0;
                 _st.Zero=res3.b.l ? 0 : 1;
                 goto calcParity;
                 break;
@@ -1502,14 +750,14 @@ store_dca:
                 res3.b.l=res1.b.l;
                 i=_st.Carry;
                 _st.Carry=0;
-                if((_res1.b.l & 0xf) > 9 || _st.DigitCarry) {
+                if((res1.b.l & 0xf) > 9 || _st.DigitCarry) {
                   res3.x+=6;
                   res1.b.l=res3.b.l;
                   _st.Carry= i || res3.b.h;
                   _st.DigitCarry=1;
                   }
                 else
-                  _f.HalfCarry=0;
+                  _st.DigitCarry=0;
                 if((res1.b.l>0x99) || i) {
                   res3.b.l+=0x60;  
                   _st.Carry=1;
@@ -1518,64 +766,49 @@ store_dca:
                   _st.Carry=0;
                 goto store_dca;
                 break;
-              case 0b0010 << 6:   // LIIM
-                _st.x=(_st.x & 0b0011111111111111) | (Pipe2.x & 0b1100000000000000);
+              case 0b0010) << 6:   // LIIM
+                _st.InterruptMask=(_st.InterruptMask & 0b11111100)) | (Pipe2.x & 0b00000011));
                 break;
               default:   // XOP
                 i=_wp;
-                _wp=GetIntValue(0x0040+regs1->r[(Pipe1 & 0b1111000000) >> 4].x*4);
-                regs1->r[11].x=res3.x;
-                regs1->r[13].x=i;
-                regs1->r[14].x=_pc;
-                regs1->r[15].x=_st.x;
+                _wp=GetIntValue((uint16_t)(0x0040+GET_REG((Pipe1 & 0b1111000000) >> 6)*4));
+						    regs=(union T_REGISTERS *)&ram_seg[_wp & 0xff /* -RAM_START */];     // così oppure cast diretto...
+                SET_REG(11,res3.x);
+                SET_REG(13,i);
+                SET_REG(14,_pc);
+                SET_REG(15,_st.x);
                 _st.XOP=1;
-                _pc=GetIntValue(0x0042+regs1->r[(Pipe1 & 0b1111000000) >> 4].x*4);
+                _pc=GetIntValue(0x0042+GET_REG((Pipe1 & 0b1111000000)) >> 6)*4);
                 break;
               }
             
 #else
             i=_wp;
-         		_wp=GetIntValue(0x0040+regs1->r[(Pipe1 & 0b1111000000) >> 4].x*4);
-            regs1->r[11].x=res3.x;
-            regs1->r[13].x=i;
-            regs1->r[14].x=_pc;
-            regs1->r[15].x=_st.x;
+         		_wp=GetIntValue((uint16_t)(0x0040+GET_REG((Pipe1 & 0b1111000000) >> 6)*4));
+				    regs=(union T_REGISTERS *)&ram_seg[_wp & 0xff /* -RAM_START */];     // così oppure cast diretto...
+            SET_REG(11,res3.x);
+            SET_REG(13,i);
+            SET_REG(14,_pc);
+            SET_REG(15,_st.x);
             _st.XOP=1;
-           	_pc=GetIntValue(0x0042+regs1->r[(Pipe1 & 0b1111000000) >> 4].x*4);
+           	_pc=GetIntValue((uint16_t)(0x0042+GET_REG((Pipe1 & 0b1111000000) >> 6)*4));
             break;
 #endif
           }
         break;
       
-      case 0b0011 << 12:    // Multiply, Divide
-        switch(workingTS) {
-          case REGISTER_DIRECT:
-            res1.x=WORKING_REG;
-            break;
-          case REGISTER_INDIRECT:
-            res1.x=GetIntValue(WORKING_REG);
-            break;
-          case REGISTER_SYMBOLIC_INDEXED:
-            if(workingRegIndex)
-              res1.x=GetIntValue(WORKING_REG+(int16_t)Pipe2.x);
-            else
-              res1.x=GetIntValue(Pipe2.x);
-            _pc+=2;
-            break;
-          case REGISTER_INDIRECT_AUTOINCREMENT:
-            res1.x=GetIntValue(WORKING_REG);
-            WORKING_REG+=2;
-            break;
-          }
+      case 0b0011 << 12:    // Multiply, Divide, CRU
+				COMPUTE_SOURCE_NOPIPE(1);
     		switch(Pipe1 & 0b1111110000000000) {
           case 0b001110 << 10:     // MPY Multiply
+						res2.x=GET_WORKING_REG_D();
             res3.d = res1.x * res2.x;
-            WORKING_REG2=HIWORD(res3.d);
-            regs1->r[(((Pipe1 >> 8) +1) & 0xf)].x=res3.x;   // OKKIO, porcata, & se 15...
+            SET_WORKING_REG_D(HIWORD(res3.d));
+            SET_REG(((WORKING_REG2_INDEX+1) /*& 0xf*/),res3.x);   // OKKIO, porcata, & se 15... dice che deve andare in memoria subito dopo! tipo R16
 //no!            goto aggFlag;
             break;
           case 0b001111 << 10:     // DIV Divide
-            res2.d = MAKELONG(WORKING_REG2,regs1->r[(((Pipe1 >> 8) +1) & 0xf)].x);    // OKKIO...
+            res2.d = MAKELONG(GET_REG((WORKING_REG2_INDEX+1) /*& 0xf*/),GET_WORKING_REG_D());    // OKKIO...
             if(!res1.x) {
               //DIVIDE ZERO??
               }
@@ -1600,48 +833,58 @@ store_dca:
           }
       }
       }*/
-            if( (((res1.x & 0x8000) == 0 && (res2.x & 0x8000) == 0x8000))
-              || ((res1.x & 0x8000) == (res2.x & 0x8000) && (((res2.x - res1.x) & 0x8000) == 0)) )
+            if(res2.d < res1.x)
               _st.Overflow = 1;
             else {
-              res3.d = res2.d / (uint32_t)res1.x;
-              WORKING_REG2=LOWORD(res3.d);
-              regs1->r[(((Pipe1 >> 8) +1) & 0xf)].x=res2.d % (uint32_t)res1.x;   // OKKIO, porcata, & se 15...
+	            res3.d = res2.d / (uint32_t)res1.x;		// signed o unsigned??
+              SET_WORKING_REG_D(LOWORD(res3.d));
+              SET_REG((WORKING_REG2_INDEX+1) /*& 0xf*/,res2.d % (uint32_t)res1.x);   // OKKIO, porcata, & se 15... dice che deve andare in memoria subito dopo! tipo R16
               _st.Overflow = 0;
               }
             break;
             
           case 0b001100 << 10:     // LDCR Load communication register
-//                GetValueCRU();
-//                PutValueCRU();
+						{uint8_t cnt=WORKING_REG2_INDEX;
+            PutValueCRU(GET_REG(12),res1.x,cnt);
+						res3.x=res1.x;
+						if(cnt>8)
+							goto aggFlag16Z;
+						else
+							goto aggFlag8Z;
+						}
             break;
           case 0b001101 << 10:     // STCR Store communication register
-//                GetValueCRU();
-//                PutValueCRU();
-            break;
-            
-          case 0b000111 << 10:     // SBO SBZ TB (CRU operations)
-        		switch(Pipe1 & 0b1111111100000000) {    // https://www.unige.ch/medecine/nouspikel/ti99/cru.htm
-              case 0b00111101 << 8:     // SBO Set bit to one
-//                GetValueCRU();
-//                PutValueCRU();
-                break;
-              case 0b00111110 << 8:     // SBZ Set bit to zero
-//                GetValueCRU();
-//                PutValueCRU();
-                break;
-              case 0b00111111 << 8:     // TB Test bit 
-//                GetValueCRU();
-                break;
-              }
+						{uint8_t cnt=WORKING_REG2_INDEX;
+            res3.x=GetValueCRU(GET_REG(12),cnt);
+						if(cnt>8) {
+							goto store16_S;
+							}
+						else {
+							res3.b.l=res3.b.h;
+							STORE_SOURCE_8 
+							goto aggFlag8Z;
+							}
+						}
             break;
           }
         break;
 
-        
-			
 			}
+
+rallenta:
+		if(cyclesSoFar>cyclesHW) {			// 0.8uS => 1.19MHz
+
+			TMS9901Cnt--;		// finire...
+			if(!TMS9901Cnt) {
+				TMS9901Cnt=TMS9901Timer;
+	//			TIMIRQ=1;
+				}
+			cyclesHW += HWClock;		// Timer
+			}
+
 		} while(!fExit);
+
+	return 1;
 	}
 
 

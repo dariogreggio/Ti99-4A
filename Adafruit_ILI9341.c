@@ -48,15 +48,12 @@
  *
  */
 
-#include "z80_pic.h"
+#include "tms9900_PIC.h"
 #include "Adafruit_ILI9341.h"
 //#include "pins_arduino.h"
 //#include "lcd.h"
 #include <limits.h>
 //#include "Print.h"
-#ifndef __PIC32
-#include <libpic30.h>
-#endif
 #include "Adafruit_GFX.h"
 
 //#define SPI_DEFAULT_FREQ 24000000 ///< Default SPI data clock frequency
@@ -65,7 +62,7 @@
 uint8_t rotation;
 
 extern const char CopyrightString[];
-extern const unsigned char c64logo[];
+extern const unsigned char logo_ti99[];
 
 // -------------------------------------------------------------------------
 // Lowest-level hardware-interfacing functions. Many of these are inline and
@@ -97,9 +94,11 @@ inline void SPI_END_TRANSACTION(void) {
   
   }
 
-#if defined(__PIC32MM__)
-#define WRITE_LATB(n) 
-#else
+
+
+
+
+/*
 #define WRITE_LATB(n) {\
   LATEbits.LATE6=n & 1 ? 1 : 0;\
   LATEbits.LATE7=n & 2 ? 1 : 0;\
@@ -109,11 +108,25 @@ inline void SPI_END_TRANSACTION(void) {
   LATFbits.LATF4=n & 32 ? 1 : 0;\
   LATFbits.LATF5=n & 64 ? 1 : 0;\
   LATEbits.LATE5=n & 128 ? 1 : 0;\
+  }*/
+//static uint8_t oldv;
+//  if(n != oldv) {\      //non serve a molto... essendo 16 bit per pixel difficilmente 2 byte consecutivi sono uguali
+//  oldv=n;\
+//  }\
+//  else\
+//    Nop();
+#define WRITE_LATB(n) {\
+  LATE &= ~0b0000000011100000;\
+  LATE |= ((n & 3) << 6) | ((n & 128) >> 2);\
+  LATB &= ~0b1110000000000000;\
+  LATB |= (n & 0x1c) << 11;\
+  LATF &= ~0b0000000000110000;\
+  LATF |= (n & 0x60) >> 1;\
   }
-#endif
-#if defined(__PIC32MM__)
-#define READ_PORTB(n) {n=0;}
-#else
+
+
+
+
 #define READ_PORTB(n) {\
   n = PORTEbits.RE6 ? 1 : 0;\
   n |= PORTEbits.RE7 ? 2 : 0;\
@@ -124,7 +137,7 @@ inline void SPI_END_TRANSACTION(void) {
   n |= PORTFbits.RF5 ? 64 : 0;\
   n |= PORTEbits.RE5 ? 128 : 0;\
   }
-#endif
+
 
 
 /*!
@@ -377,8 +390,8 @@ int Adafruit_ILI9341_SPIHW(int8_t cs, int8_t dc, int8_t rst) {
 int Adafruit_ILI9341_8(enum tftBusWidth busWidth, int8_t d0, int8_t wr,
                                    int8_t dc, int8_t cs, int8_t rst, int8_t rd) {
   
-#if defined(__PIC32MM__)
-#else  
+
+
   TRISEbits.TRISE6=0;
   TRISEbits.TRISE7=0;
   TRISBbits.TRISB13=0;
@@ -392,11 +405,11 @@ int Adafruit_ILI9341_8(enum tftBusWidth busWidth, int8_t d0, int8_t wr,
   TRISBbits.TRISB4=0;
   TRISBbits.TRISB5=0;
   TRISBbits.TRISB10=0;
-#endif
+
   
 
-  CNPUB = 0x0000;   // OCCHIO agli altri usi...
-  CNPDB = 0x0000;
+  CNPUB = 0x0001 /*0x0001*/;   // OCCHIO agli altri usi... LASCIO off così funziona tipo touch :) su arduino ed è più comodo
+//  CNPDB = 0x0060;     // I2C su arduino/forgetIvrea32
   ANSELB= 0x0000;
   m_LCDRSTBit=0;
   LATBbits.LATB2=1;     // CS 
@@ -462,6 +475,7 @@ void begin(uint32_t freq) {
     x = pgm_read_byte(addr++);
     numArgs = x & 0x7F;
     sendCommand(cmd, addr, numArgs);
+    __delay_ms(1);    //2024, se no non prendeva orientamento giusto...
     addr += numArgs;
     if(x & 0x80)
       __delay_ms(150);
@@ -581,9 +595,11 @@ void SPI_WRITE16(uint16_t w) {
       *(volatile uint16_t *)tft8.writePort = w;
       }
 #endif
-  WRITE_LATB(w >> 8);     // v. ENDIAN bit di Interface Mode (0xF6)
+  uint8_t w2=w >> 8;
+  WRITE_LATB(w2);     // v. ENDIAN bit di Interface Mode (0xF6)
   TFT_WR_STROBE();
-  WRITE_LATB(w);
+  w2=w & 0xff;
+  WRITE_LATB(w2);
   TFT_WR_STROBE();
   }
 
@@ -1045,10 +1061,9 @@ void drawLine(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0,UGRAPH_COORD_T x1, UGRAPH_COO
 void drawRect(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color) {
 
 	HLine(x, y, w, color);
-	HLine(x, y+h-1, w, color);
+	HLine(x, y+h, w+1, color);
 	VLine(x, y, h, color);
-	VLine(x+w-1, y, h, color);
-//	writecommand(CMD_NOP);
+	VLine(x+w, y, h+1, color);
 	}
 
 void fillScreen(UINT16 color) {
@@ -1072,7 +1087,7 @@ void __attribute__((always_inline)) HLine(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UG
 
   START_WRITE();
 	setAddrWindow(x, y, w, 1);
-	do { writedata16(color); } while (--w > 0);
+	do { writedata16(color); } while(w-- > 0);
   END_WRITE();
 	}
 
@@ -1080,7 +1095,7 @@ void __attribute__((always_inline)) VLine(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UG
 
   START_WRITE();
 	setAddrWindow(x, y, 1, h);
-	do { writedata16(color); } while (--h > 0);
+	do { writedata16(color); } while(h-- > 0);
   END_WRITE();
 	}
 		
@@ -1213,7 +1228,6 @@ void _swap(UGRAPH_COORD_T *a, UGRAPH_COORD_T *b) {
 	}
 
 
-extern const unsigned char logo_msx[];
 
 void drawBG(void) {
 	char buffer[22];
@@ -1223,24 +1237,25 @@ void drawBG(void) {
 
 	setTextSize(1);
 	setTextColor(BRIGHTGREEN);
-	LCDWrite(buffer);
-	LCDXY(14,2);
+//	LCDWrite(buffer);
+	LCDXY(12,1);
 	LCDWrite(CopyrightString);
 
+#ifdef ST7735
+  drawBitmap4(16,24,logo_ti99);
+#endif
+#ifdef ILI9341
+  drawBitmap4(30,17,logo_ti99);
+#endif
 
 	setTextColor(BRIGHTCYAN);
 	LCDXY(22,28);
-	sprintf(buffer,"booting...");
-	LCDWrite(buffer);
+	LCDWrite("booting...");
 
-#ifdef MSX  
-  drawBitmap4(30,34,logo_msx);
-#endif
   
 	ClrWdt();
-  __delay_ms(1000); 
+  __delay_ms(600); 
 	ClrWdt();
-
 	}
 
 
@@ -1269,9 +1284,9 @@ BYTE LCDInit(void) {		// su SPI
 
 	drawBG();
   
-  ShortDelay(250000);
+  __delay_ms(250);
   ClrWdt();
-  ShortDelay(250000);
+  __delay_ms(250);
   ClrWdt();
 
 	return 1;

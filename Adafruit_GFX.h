@@ -147,7 +147,7 @@ typedef WORD GFX_COLOR;
 #define Color24To565(color_)    ((((color_ >> 16) & 0xFF) / 8) << 11) | ((((color_ >> 8) & 0xFF) / 4) << 5) | (((color_) &  0xFF) / 8)
   //convert 24bit color into packet 16 bit one (credits for this are all mine) GD made a macro!
 
-#ifdef ST7735
+#if defined(ST7735) || defined(ILI9341) || defined(__PIC32MM__)         // serve cmq per i colori..
 #ifndef BLACK
 			#define BLACK           Color565(0, 0, 0)
 #endif	

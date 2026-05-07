@@ -67,21 +67,21 @@ int Adafruit_ST7735_2(int8_t cs, int8_t dc, int8_t rst);
 
 void begin(void);
 
-void fillScreen(UINT16 color);
+void fillScreen(GFX_COLOR color);
 #define clearScreen() fillScreen(BLACK)		//same as fillScreen DEMENTI
-void drawPixel(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UINT16 color);
-void drawFastVLine(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T h, UINT16 color);
-void drawFastHLine(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UINT16 color);
-void drawLine(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0,UGRAPH_COORD_T x1, UGRAPH_COORD_T y1, UINT16 color);
-void drawRect(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UGRAPH_COORD_T h, UINT16 color);
-void fillRect(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UGRAPH_COORD_T h,UINT16 color);
+void drawPixel(UGRAPH_COORD_T x, UGRAPH_COORD_T y, GFX_COLOR color);
+void drawFastVLine(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T h, GFX_COLOR color);
+void drawFastHLine(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, GFX_COLOR color);
+void drawLine(UGRAPH_COORD_T x0, UGRAPH_COORD_T y0,UGRAPH_COORD_T x1, UGRAPH_COORD_T y1, GFX_COLOR color);
+void drawRect(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UGRAPH_COORD_T h, GFX_COLOR color);
+void fillRect(UGRAPH_COORD_T x, UGRAPH_COORD_T y, UGRAPH_COORD_T w, UGRAPH_COORD_T h,GFX_COLOR color);
     
-void __attribute__((always_inline)) HLine(UGRAPH_COORD_T , UGRAPH_COORD_T , UGRAPH_COORD_T , UINT16 );
-void __attribute__((always_inline)) VLine(UGRAPH_COORD_T , UGRAPH_COORD_T , UGRAPH_COORD_T , UINT16 );
-void __attribute__((always_inline)) Pixel(UGRAPH_COORD_T , UGRAPH_COORD_T , UINT16 );
+void __attribute__((always_inline)) HLine(UGRAPH_COORD_T , UGRAPH_COORD_T , UGRAPH_COORD_T , GFX_COLOR );
+void __attribute__((always_inline)) VLine(UGRAPH_COORD_T , UGRAPH_COORD_T , UGRAPH_COORD_T , GFX_COLOR );
+void __attribute__((always_inline)) Pixel(UGRAPH_COORD_T , UGRAPH_COORD_T , GFX_COLOR );
 
-void writedata16(UINT16);
-void writedata16x2(UINT16,UINT16);
+void writedata16(GFX_COLOR);
+void writedata16x2(GFX_COLOR,GFX_COLOR);
 void writeColor(uint16_t color, uint32_t len);
     
 BOOL boundaryCheck(UGRAPH_COORD_T x,UGRAPH_COORD_T y);
